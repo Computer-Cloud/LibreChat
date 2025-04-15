@@ -1,10 +1,11 @@
-const OpenAI = require('openai');
 const { OllamaClient } = require('./OllamaClient');
 const { HttpsProxyAgent } = require('https-proxy-agent');
-const { SplitStreamHandler, GraphEvents } = require('@librechat/agents');
+const { SplitStreamHandler, CustomOpenAIClient: OpenAI } = require('@librechat/agents');
 const {
   Constants,
   ImageDetail,
+  ContentTypes,
+  parseTextParts,
   EModelEndpoint,
   resolveHeaders,
   KnownEndpoints,
@@ -30,17 +31,18 @@ const {
   createContextHandlers,
 } = require('./prompts');
 const { encodeAndFormat } = require('~/server/services/Files/images/encode');
+const { createFetch, createStreamEventHandlers } = require('./generators');
 const { addSpaceIfNeeded, isEnabled, sleep } = require('~/server/utils');
 const Tokenizer = require('~/server/services/Tokenizer');
 const { spendTokens } = require('~/models/spendTokens');
 const { handleOpenAIErrors } = require('./tools/util');
 const { createLLM, RunManager } = require('./llm');
-const { logger, sendEvent } = require('~/config');
 const ChatGPTClient = require('./ChatGPTClient');
 const { summaryBuffer } = require('./memory');
 const { runTitleChain } = require('./chains');
 const { tokenSplit } = require('./document');
 const BaseClient = require('./BaseClient');
+const { logger } = require('~/config');
 
 class OpenAIClient extends BaseClient {
   constructor(apiKey, options = {}) {
@@ -223,10 +225,6 @@ class OpenAIClient extends BaseClient {
 
     if (this.azureEndpoint && this.options.debug) {
       logger.debug('Using Azure endpoint');
-    }
-
-    if (this.useOpenRouter) {
-      this.completionsUrl = 'https://openrouter.ai/api/v1/chat/completions';
     }
 
     return this;
@@ -505,8 +503,24 @@ class OpenAIClient extends BaseClient {
     if (promptPrefix && this.isOmni === true) {
       const lastUserMessageIndex = payload.findLastIndex((message) => message.role === 'user');
       if (lastUserMessageIndex !== -1) {
-        payload[lastUserMessageIndex].content =
-          `${promptPrefix}\n${payload[lastUserMessageIndex].content}`;
+        if (Array.isArray(payload[lastUserMessageIndex].content)) {
+          const firstTextPartIndex = payload[lastUserMessageIndex].content.findIndex(
+            (part) => part.type === ContentTypes.TEXT,
+          );
+          if (firstTextPartIndex !== -1) {
+            const firstTextPart = payload[lastUserMessageIndex].content[firstTextPartIndex];
+            payload[lastUserMessageIndex].content[firstTextPartIndex].text =
+              `${promptPrefix}\n${firstTextPart.text}`;
+          } else {
+            payload[lastUserMessageIndex].content.unshift({
+              type: ContentTypes.TEXT,
+              text: promptPrefix,
+            });
+          }
+        } else {
+          payload[lastUserMessageIndex].content =
+            `${promptPrefix}\n${payload[lastUserMessageIndex].content}`;
+        }
       }
     }
 
@@ -595,7 +609,7 @@ class OpenAIClient extends BaseClient {
         return result.trim();
       }
 
-      logger.debug('[OpenAIClient] sendCompletion: result', result);
+      logger.debug('[OpenAIClient] sendCompletion: result', { ...result });
 
       if (this.isChatCompletion) {
         reply = result.choices[0].message.content;
@@ -804,7 +818,7 @@ ${convo}
 
         const completionTokens = this.getTokenCount(title);
 
-        this.recordTokenUsage({ promptTokens, completionTokens, context: 'title' });
+        await this.recordTokenUsage({ promptTokens, completionTokens, context: 'title' });
       } catch (e) {
         logger.error(
           '[OpenAIClient] There was an issue generating the title with the completion method',
@@ -1107,6 +1121,9 @@ ${convo}
     return (msg) => {
       if (msg.text != null && msg.text && msg.text.startsWith(':::thinking')) {
         msg.text = msg.text.replace(/:::thinking.*?:::/gs, '').trim();
+      } else if (msg.content != null) {
+        msg.text = parseTextParts(msg.content, true);
+        delete msg.content;
       }
 
       return msg;
@@ -1156,10 +1173,6 @@ ${convo}
 
       if (this.options.proxy) {
         opts.httpAgent = new HttpsProxyAgent(this.options.proxy);
-      }
-
-      if (this.isVisionModel) {
-        modelOptions.max_tokens = 4000;
       }
 
       /** @type {TAzureConfig | undefined} */
@@ -1232,7 +1245,10 @@ ${convo}
       let chatCompletion;
       /** @type {OpenAI} */
       const openai = new OpenAI({
-        fetch: this.fetch,
+        fetch: createFetch({
+          directEndpoint: this.options.directEndpoint,
+          reverseProxyUrl: this.options.reverseProxyUrl,
+        }),
         apiKey: this.apiKey,
         ...opts,
       });
@@ -1262,12 +1278,13 @@ ${convo}
       }
 
       if (this.options.addParams && typeof this.options.addParams === 'object') {
+        const addParams = { ...this.options.addParams };
         modelOptions = {
           ...modelOptions,
-          ...this.options.addParams,
+          ...addParams,
         };
         logger.debug('[OpenAIClient] chatCompletion: added params', {
-          addParams: this.options.addParams,
+          addParams: addParams,
           modelOptions,
         });
       }
@@ -1296,11 +1313,12 @@ ${convo}
       }
 
       if (this.options.dropParams && Array.isArray(this.options.dropParams)) {
-        this.options.dropParams.forEach((param) => {
+        const dropParams = [...this.options.dropParams];
+        dropParams.forEach((param) => {
           delete modelOptions[param];
         });
         logger.debug('[OpenAIClient] chatCompletion: dropped params', {
-          dropParams: this.options.dropParams,
+          dropParams: dropParams,
           modelOptions,
         });
       }
@@ -1323,14 +1341,6 @@ ${convo}
       let streamResolve;
 
       if (
-        this.isOmni === true &&
-        (this.azure || /o1(?!-(?:mini|preview)).*$/.test(modelOptions.model)) &&
-        !/o3-.*$/.test(this.modelOptions.model) &&
-        modelOptions.stream
-      ) {
-        delete modelOptions.stream;
-        delete modelOptions.stop;
-      } else if (
         (!this.isOmni || /^o1-(mini|preview)/i.test(modelOptions.model)) &&
         modelOptions.reasoning_effort != null
       ) {
@@ -1350,15 +1360,12 @@ ${convo}
         delete modelOptions.reasoning_effort;
       }
 
+      const handlers = createStreamEventHandlers(this.options.res);
       this.streamHandler = new SplitStreamHandler({
         reasoningKey,
         accumulate: true,
         runId: this.responseMessageId,
-        handlers: {
-          [GraphEvents.ON_RUN_STEP]: (event) => sendEvent(this.options.res, event),
-          [GraphEvents.ON_MESSAGE_DELTA]: (event) => sendEvent(this.options.res, event),
-          [GraphEvents.ON_REASONING_DELTA]: (event) => sendEvent(this.options.res, event),
-        },
+        handlers,
       });
 
       intermediateReply = this.streamHandler.tokens;
