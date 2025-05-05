@@ -422,6 +422,9 @@ class AnthropicClient extends BaseClient {
             this.contextHandlers?.processFile(file);
             continue;
           }
+          if (file.metadata?.fileIdentifier) {
+            continue;
+          }
 
           orderedMessages[i].tokenCount += this.calculateImageTokenCost({
             width: file.width,

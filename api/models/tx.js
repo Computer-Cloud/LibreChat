@@ -111,6 +111,10 @@ const tokenValues = Object.assign(
     /* cohere doesn't have rates for the older command models,
   so this was from https://artificialanalysis.ai/models/command-light/providers */
     command: { prompt: 0.38, completion: 0.38 },
+    gemma: { prompt: 0, completion: 0 }, // https://ai.google.dev/pricing
+    'gemma-2': { prompt: 0, completion: 0 }, // https://ai.google.dev/pricing
+    'gemma-3': { prompt: 0, completion: 0 }, // https://ai.google.dev/pricing
+    'gemma-3-27b': { prompt: 0, completion: 0 }, // https://ai.google.dev/pricing
     'gemini-2.0-flash-lite': { prompt: 0.075, completion: 0.3 },
     'gemini-2.0-flash': { prompt: 0.1, completion: 0.4 },
     'gemini-2.0': { prompt: 0, completion: 0 }, // https://ai.google.dev/pricing
@@ -180,6 +184,14 @@ const getValueKey = (model, endpoint) => {
     return 'gpt-3.5-turbo-1106';
   } else if (modelName.includes('gpt-3.5')) {
     return '4k';
+  } else if (modelName.includes('o4-mini')) {
+    return 'o4-mini';
+  } else if (modelName.includes('o4')) {
+    return 'o4';
+  } else if (modelName.includes('o3-mini')) {
+    return 'o3-mini';
+  } else if (modelName.includes('o3')) {
+    return 'o3';
   } else if (modelName.includes('o1-preview')) {
     return 'o1-preview';
   } else if (modelName.includes('o1-mini')) {
