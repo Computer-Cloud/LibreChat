@@ -140,9 +140,6 @@ function disposeClient(client) {
     if (client.useMessages !== undefined) {
       client.useMessages = null;
     }
-    if (client.isLegacyOutput !== undefined) {
-      client.isLegacyOutput = null;
-    }
     if (client.supportsCacheControl !== undefined) {
       client.supportsCacheControl = null;
     }
@@ -222,6 +219,9 @@ function disposeClient(client) {
     }
     if (client.maxResponseTokens) {
       client.maxResponseTokens = null;
+    }
+    if (client.processMemory) {
+      client.processMemory = null;
     }
     if (client.run) {
       // Break circular references in run
