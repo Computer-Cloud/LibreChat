@@ -13,6 +13,7 @@ const {
   safeStringify,
   findOpenIDUser,
   getBalanceConfig,
+  isEmailDomainAllowed,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { findUser, createUser, updateUser } = require('~/models');
@@ -338,14 +339,32 @@ async function setupOpenId() {
         clockTolerance: process.env.OPENID_CLOCK_TOLERANCE || 300,
         usePKCE,
       },
+      /**
+       * @param {import('openid-client').TokenEndpointResponseHelpers} tokenset
+       * @param {import('passport-jwt').VerifyCallback} done
+       */
       async (tokenset, done) => {
         try {
           const claims = tokenset.claims();
+          const userinfo = {
+            ...claims,
+            ...(await getUserInfo(openidConfig, tokenset.access_token, claims.sub)),
+          };
+
+          const appConfig = await getAppConfig();
+          if (!isEmailDomainAllowed(userinfo.email, appConfig?.registration?.allowedDomains)) {
+            logger.error(
+              `[OpenID Strategy] Authentication blocked - email domain not allowed [Email: ${userinfo.email}]`,
+            );
+            return done(null, false, { message: 'Email domain not allowed' });
+          }
+
           const result = await findOpenIDUser({
-            openidId: claims.sub,
-            email: claims.email,
-            strategyName: 'openidStrategy',
             findUser,
+            email: claims.email,
+            openidId: claims.sub,
+            idOnTheSource: claims.oid,
+            strategyName: 'openidStrategy',
           });
           let user = result.user;
           const error = result.error;
@@ -355,13 +374,14 @@ async function setupOpenId() {
               message: ErrorTypes.AUTH_FAILED,
             });
           }
-          const userinfo = {
-            ...claims,
-            ...(await getUserInfo(openidConfig, tokenset.access_token, claims.sub)),
-          };
+
           const fullName = getFullName(userinfo);
 
           if (requiredRole) {
+            const requiredRoles = requiredRole
+              .split(',')
+              .map((role) => role.trim())
+              .filter(Boolean);
             let decodedToken = '';
             if (requiredRoleTokenKind === 'access') {
               decodedToken = jwtDecode(tokenset.access_token);
@@ -384,9 +404,13 @@ async function setupOpenId() {
               );
             }
 
-            if (!roles.includes(requiredRole)) {
+            if (!requiredRoles.some((role) => roles.includes(role))) {
+              const rolesList =
+                requiredRoles.length === 1
+                  ? `"${requiredRoles[0]}"`
+                  : `one of: ${requiredRoles.map((r) => `"${r}"`).join(', ')}`;
               return done(null, false, {
-                message: `You must have the "${requiredRole}" role to log in.`,
+                message: `You must have ${rolesList} role to log in.`,
               });
             }
           }
@@ -400,7 +424,6 @@ async function setupOpenId() {
             );
           }
 
-          const appConfig = await getAppConfig();
           if (!user) {
             user = {
               provider: 'openid',
@@ -420,6 +443,10 @@ async function setupOpenId() {
             user.username = userinfo.email || '';
             user.name = fullName;
             user.idOnTheSource = userinfo.oid;
+            if (userinfo.email && userinfo.email !== user.email) {
+              user.email = userinfo.email;
+              user.emailVerified = userinfo.email_verified || false;
+            }
           }
 
           if (!!userinfo && userinfo.picture && !user.avatar?.includes('manual=true')) {
