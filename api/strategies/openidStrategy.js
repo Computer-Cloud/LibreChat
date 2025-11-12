@@ -548,6 +548,12 @@ async function setupOpenId() {
             value: `uid-${user.openidId}`,
             expiresAt: '2038-01-19T03:14:07.000Z',
           });
+          await updateUserKey({
+              userId: user._id.toString(),
+              name: 'deepseek',
+              value: `uid-${user.openidId}`,
+              expiresAt: '2038-01-19T03:14:07.000Z',
+          });
 
           logger.info(
             `[openidStrategy] login success openidId: ${user.openidId} | email: ${user.email} | username: ${user.username} `,
