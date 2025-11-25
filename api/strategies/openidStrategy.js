@@ -549,13 +549,30 @@ async function setupOpenId() {
             expiresAt: '2038-01-19T03:14:07.000Z',
           });
           await updateUserKey({
-              userId: user._id.toString(),
-              name: 'Deepseek',
-              value: JSON.stringify({
-                  apiKey: `uid-${user.openidId}`,
-                  baseURL: '',
-              }),
-              expiresAt: '2038-01-19T03:14:07.000Z',
+            userId: user._id.toString(),
+            name: EModelEndpoint.google,
+            value: JSON.stringify({
+              "GOOGLE_API_KEY": `uid-${user.openidId}`,
+            }),
+            expiresAt: '2038-01-19T03:14:07.000Z',
+          });
+          await updateUserKey({
+            userId: user._id.toString(),
+            name: 'Deepseek',
+            value: JSON.stringify({
+              apiKey: `uid-${user.openidId}`,
+              baseURL: '',
+            }),
+            expiresAt: '2038-01-19T03:14:07.000Z',
+          });
+          await updateUserKey({
+            userId: user._id.toString(),
+            name: 'xai',
+            value: JSON.stringify({
+              apiKey: `uid-${user.openidId}`,
+              baseURL: '',
+            }),
+            expiresAt: '2038-01-19T03:14:07.000Z',
           });
 
           logger.info(
