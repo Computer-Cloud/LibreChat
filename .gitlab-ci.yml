@@ -14,7 +14,7 @@ workflow:
 # Lint stage
 lint:
   stage: lint
-  image: node:25-alpine
+  image: node:25
   before_script:
     - corepack enable
     - corepack prepare pnpm@latest --activate
@@ -29,7 +29,7 @@ lint:
 # Test stage
 test:
   stage: test
-  image: node:25-alpine
+  image: node:25
   before_script:
     - corepack enable
     - corepack prepare pnpm@latest --activate
