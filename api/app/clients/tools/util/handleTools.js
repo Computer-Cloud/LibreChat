@@ -34,7 +34,6 @@ const {
   StructuredACS,
   TraversaalSearch,
   StructuredWolfram,
-  createYouTubeTools,
   TavilySearchResults,
   createGeminiImageTool,
   createOpenAIImageTools,
@@ -194,11 +193,6 @@ const loadTools = async ({
   const openAIApiKey = await getOpenAIKey(options, user);
 
   const customConstructors = {
-    youtube: async (_toolContextMap) => {
-      const authFields = getAuthFields('youtube');
-      const authValues = await loadAuthValues({ userId: user, authFields });
-      return createYouTubeTools(authValues);
-    },
     image_gen_oai: async (toolContextMap) => {
       const authFields = getAuthFields('image_gen_oai');
       const authValues = await loadAuthValues({ userId: user, authFields });
