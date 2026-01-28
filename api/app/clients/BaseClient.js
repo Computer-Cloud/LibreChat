@@ -156,6 +156,30 @@ class BaseClient {
     if (this.options.directEndpoint) {
       url = this.options.reverseProxyUrl;
     }
+
+    if (!init) {
+      init = {};
+    }
+    if (!init.headers) {
+      init.headers = {};
+    }
+
+    const req = this.options.req;
+    let clientIp = '';
+    if (req) {
+      if (req.headers['x-forwarded-for']) {
+        clientIp = req.headers['x-forwarded-for'].split(',')[0].trim();
+      }
+    }
+
+    if (clientIp) {
+      if (init.headers instanceof Headers) {
+        init.headers.append('x-cs-client-ip', clientIp);
+      } else {
+        init.headers['x-cs-client-ip'] = clientIp;
+      }
+    }
+
     logger.debug(`Making request to ${url}`);
     if (typeof Bun !== 'undefined') {
       return await fetch(url, init);

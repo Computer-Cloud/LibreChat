@@ -87,5 +87,21 @@ export async function initializeGoogle({
     ...clientOptions,
   };
 
-  return getGoogleConfig(credentials, clientOptions);
+  const result = getGoogleConfig(credentials, clientOptions);
+
+  let clientIp = '';
+  if (req.headers['x-forwarded-for']) {
+    clientIp = (req.headers['x-forwarded-for'] as string).split(',')[0].trim();
+  }
+
+  if (clientIp) {
+    if (!(result.llmConfig as { customHeaders?: Record<string, string> }).customHeaders) {
+      (result.llmConfig as { customHeaders?: Record<string, string> }).customHeaders = {};
+    }
+    (result.llmConfig as { customHeaders?: Record<string, string> }).customHeaders[
+      'x-cs-client-ip'
+    ] = clientIp;
+  }
+
+  return result;
 }

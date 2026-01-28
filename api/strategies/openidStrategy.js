@@ -17,10 +17,9 @@ const {
   isEmailDomainAllowed,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
-const { findUser, createUser, updateUser } = require('~/models');
+const { findUser, createUser, updateUser, updateUserKey } = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
 const getLogStores = require('~/cache/getLogStores');
-const { updateUserKey } = require('~/server/services/UserService');
 const { EModelEndpoint } = require('librechat-data-provider');
 
 /**

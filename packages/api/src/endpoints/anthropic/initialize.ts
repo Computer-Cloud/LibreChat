@@ -83,6 +83,22 @@ export async function initializeAnthropic({
 
   const result = getLLMConfig(credentials, clientOptions);
 
+  let clientIp = '';
+  if (req.headers['x-forwarded-for']) {
+    clientIp = (req.headers['x-forwarded-for'] as string).split(',')[0].trim();
+  }
+
+  if (clientIp) {
+    if (!result.llmConfig.clientOptions) {
+      result.llmConfig.clientOptions = {};
+    }
+    if (!result.llmConfig.clientOptions.defaultHeaders) {
+      result.llmConfig.clientOptions.defaultHeaders = {};
+    }
+    (result.llmConfig.clientOptions.defaultHeaders as Record<string, string>)['x-cs-client-ip'] =
+      clientIp;
+  }
+
   // Apply stream rate delay
   if (anthropicConfig?.streamRate) {
     (result.llmConfig as Record<string, unknown>)._lc_stream_delay = anthropicConfig.streamRate;

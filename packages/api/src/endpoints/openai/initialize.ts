@@ -128,6 +128,18 @@ export async function initializeOpenAI({
     user: req.user?.id,
   };
 
+  let clientIp = '';
+  if (req.headers['x-forwarded-for']) {
+    clientIp = (req.headers['x-forwarded-for'] as string).split(',')[0].trim();
+  }
+
+  if (clientIp) {
+    if (!clientOptions.headers) {
+      clientOptions.headers = {};
+    }
+    clientOptions.headers['x-cs-client-ip'] = clientIp;
+  }
+
   const finalClientOptions: OpenAIConfigOptions = {
     ...clientOptions,
     modelOptions,
