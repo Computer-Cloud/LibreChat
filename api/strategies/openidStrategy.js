@@ -6,8 +6,8 @@ const client = require('openid-client');
 const jwtDecode = require('jsonwebtoken/decode');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { hashToken, logger } = require('@librechat/data-schemas');
-const { CacheKeys, ErrorTypes } = require('librechat-data-provider');
 const { Strategy: OpenIDStrategy } = require('openid-client/passport');
+const { CacheKeys, ErrorTypes, SystemRoles } = require('librechat-data-provider');
 const {
   isEnabled,
   logHeaders,
@@ -289,163 +289,111 @@ function convertToUsername(input, defaultValue = '') {
 }
 
 /**
- * Sets up the OpenID strategy for authentication.
- * This function configures the OpenID client, handles proxy settings,
- * and defines the OpenID strategy for Passport.js.
+ * Process OpenID authentication tokenset and userinfo
+ * This is the core logic extracted from the passport strategy callback
+ * Can be reused by both the passport strategy and proxy authentication
  *
- * @async
- * @function setupOpenId
- * @returns {Promise<Configuration | null>} A promise that resolves when the OpenID strategy is set up and returns the openid client config object.
- * @throws {Error} If an error occurs during the setup process.
+ * @param {Object} tokenset - The OpenID tokenset containing access_token, id_token, etc.
+ * @param {boolean} existingUsersOnly - If true, only existing users will be processed
+ * @returns {Promise<Object>} The authenticated user object with tokenset
  */
-async function setupOpenId() {
-  try {
-    const shouldGenerateNonce = isEnabled(process.env.OPENID_GENERATE_NONCE);
+async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
+  const claims = tokenset.claims ? tokenset.claims() : tokenset;
+  const userinfo = {
+    ...claims,
+  };
 
-    /** @type {ClientMetadata} */
-    const clientMetadata = {
-      client_id: process.env.OPENID_CLIENT_ID,
-      client_secret: process.env.OPENID_CLIENT_SECRET,
-    };
+  if (tokenset.access_token) {
+    const providerUserinfo = await getUserInfo(openidConfig, tokenset.access_token, claims.sub);
+    Object.assign(userinfo, providerUserinfo);
+  }
 
-    if (shouldGenerateNonce) {
-      clientMetadata.response_types = ['code'];
-      clientMetadata.grant_types = ['authorization_code'];
-      clientMetadata.token_endpoint_auth_method = 'client_secret_post';
-    }
-
-    /** @type {Configuration} */
-    openidConfig = await client.discovery(
-      new URL(process.env.OPENID_ISSUER),
-      process.env.OPENID_CLIENT_ID,
-      clientMetadata,
-      undefined,
-      {
-        [client.customFetch]: customFetch,
-      },
+  const appConfig = await getAppConfig();
+  /** Azure AD sometimes doesn't return email, use preferred_username as fallback */
+  const email = userinfo.email || userinfo.preferred_username || userinfo.upn;
+  if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
+    logger.error(
+      `[OpenID Strategy] Authentication blocked - email domain not allowed [Email: ${userinfo.email}]`,
     );
+    throw new Error('Email domain not allowed');
+  }
 
-    const requiredRole = process.env.OPENID_REQUIRED_ROLE;
+  const result = await findOpenIDUser({
+    findUser,
+    email: email,
+    openidId: claims.sub || userinfo.sub,
+    idOnTheSource: claims.oid || userinfo.oid,
+    strategyName: 'openidStrategy',
+  });
+  let user = result.user;
+  const error = result.error;
+
+  if (error) {
+    throw new Error(ErrorTypes.AUTH_FAILED);
+  }
+
+  const fullName = getFullName(userinfo);
+
+  const requiredRole = process.env.OPENID_REQUIRED_ROLE;
+  if (requiredRole) {
+    const requiredRoles = requiredRole
+      .split(',')
+      .map((role) => role.trim())
+      .filter(Boolean);
     const requiredRoleParameterPath = process.env.OPENID_REQUIRED_ROLE_PARAMETER_PATH;
     const requiredRoleTokenKind = process.env.OPENID_REQUIRED_ROLE_TOKEN_KIND;
-    const usePKCE = isEnabled(process.env.OPENID_USE_PKCE);
-    logger.info(`[openidStrategy] OpenID authentication configuration`, {
-      generateNonce: shouldGenerateNonce,
-      reason: shouldGenerateNonce
-        ? 'OPENID_GENERATE_NONCE=true - Will generate nonce and use explicit metadata for federated providers'
-        : 'OPENID_GENERATE_NONCE=false - Standard flow without explicit nonce or metadata',
-    });
 
-    // Set of env variables that specify how to set if a user is an admin
-    // If not set, all users will be treated as regular users
-    const adminRole = process.env.OPENID_ADMIN_ROLE;
-    const adminRoleParameterPath = process.env.OPENID_ADMIN_ROLE_PARAMETER_PATH;
-    const adminRoleTokenKind = process.env.OPENID_ADMIN_ROLE_TOKEN_KIND;
+    let decodedToken = '';
+    if (requiredRoleTokenKind === 'access' && tokenset.access_token) {
+      decodedToken = jwtDecode(tokenset.access_token);
+    } else if (requiredRoleTokenKind === 'id' && tokenset.id_token) {
+      decodedToken = jwtDecode(tokenset.id_token);
+    }
 
-    const openidLogin = new CustomOpenIDStrategy(
-      {
-        config: openidConfig,
-        scope: process.env.OPENID_SCOPE,
-        callbackURL: process.env.DOMAIN_SERVER + process.env.OPENID_CALLBACK_URL,
-        clockTolerance: process.env.OPENID_CLOCK_TOLERANCE || 300,
-        usePKCE,
-      },
-      /**
-       * @param {import('openid-client').TokenEndpointResponseHelpers} tokenset
-       * @param {import('passport-jwt').VerifyCallback} done
-       */
-      async (tokenset, done) => {
-        try {
-          const claims = tokenset.claims();
-          const userinfo = {
-            ...claims,
-            ...(await getUserInfo(openidConfig, tokenset.access_token, claims.sub)),
-          };
+    let roles = get(decodedToken, requiredRoleParameterPath);
+    if (!roles || (!Array.isArray(roles) && typeof roles !== 'string')) {
+      logger.error(
+        `[openidStrategy] Key '${requiredRoleParameterPath}' not found in ${requiredRoleTokenKind} token!`,
+      );
+      const rolesList =
+        requiredRoles.length === 1
+          ? `"${requiredRoles[0]}"`
+          : `one of: ${requiredRoles.map((r) => `"${r}"`).join(', ')}`;
+      throw new Error(`You must have ${rolesList} role to log in.`);
+    }
 
-          const appConfig = await getAppConfig();
-          /** Azure AD sometimes doesn't return email, use preferred_username as fallback */
-          const email = userinfo.email || userinfo.preferred_username || userinfo.upn;
-          if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
-            logger.error(
-              `[OpenID Strategy] Authentication blocked - email domain not allowed [Email: ${email}]`,
-            );
-            return done(null, false, { message: 'Email domain not allowed' });
-          }
+    if (!requiredRoles.some((role) => roles.includes(role))) {
+      const rolesList =
+        requiredRoles.length === 1
+          ? `"${requiredRoles[0]}"`
+          : `one of: ${requiredRoles.map((r) => `"${r}"`).join(', ')}`;
+      throw new Error(`You must have ${rolesList} role to log in.`);
+    }
+  }
 
-          const result = await findOpenIDUser({
-            findUser,
-            email: email,
-            openidId: claims.sub,
-            idOnTheSource: claims.oid,
-            strategyName: 'openidStrategy',
-          });
-          let user = result.user;
-          const error = result.error;
+  let username = '';
+  if (process.env.OPENID_USERNAME_CLAIM) {
+    username = userinfo[process.env.OPENID_USERNAME_CLAIM];
+  } else {
+    username = convertToUsername(
+      userinfo.preferred_username || userinfo.username || userinfo.email,
+    );
+  }
 
-          if (error) {
-            return done(null, false, {
-              message: ErrorTypes.AUTH_FAILED,
-            });
-          }
+  if (existingUsersOnly && !user) {
+    throw new Error('User does not exist');
+  }
 
-          const fullName = getFullName(userinfo);
-
-          if (requiredRole) {
-            const requiredRoles = requiredRole
-              .split(',')
-              .map((role) => role.trim())
-              .filter(Boolean);
-            let decodedToken = '';
-            if (requiredRoleTokenKind === 'access') {
-              decodedToken = jwtDecode(tokenset.access_token);
-            } else if (requiredRoleTokenKind === 'id') {
-              decodedToken = jwtDecode(tokenset.id_token);
-            }
-
-            let roles = get(decodedToken, requiredRoleParameterPath);
-            if (!roles || (!Array.isArray(roles) && typeof roles !== 'string')) {
-              logger.error(
-                `[openidStrategy] Key '${requiredRoleParameterPath}' not found or invalid type in ${requiredRoleTokenKind} token!`,
-              );
-              const rolesList =
-                requiredRoles.length === 1
-                  ? `"${requiredRoles[0]}"`
-                  : `one of: ${requiredRoles.map((r) => `"${r}"`).join(', ')}`;
-              return done(null, false, {
-                message: `You must have ${rolesList} role to log in.`,
-              });
-            }
-
-            if (!requiredRoles.some((role) => roles.includes(role))) {
-              const rolesList =
-                requiredRoles.length === 1
-                  ? `"${requiredRoles[0]}"`
-                  : `one of: ${requiredRoles.map((r) => `"${r}"`).join(', ')}`;
-              return done(null, false, {
-                message: `You must have ${rolesList} role to log in.`,
-              });
-            }
-          }
-
-          let username = '';
-          if (process.env.OPENID_USERNAME_CLAIM) {
-            username = userinfo[process.env.OPENID_USERNAME_CLAIM];
-          } else {
-            username = convertToUsername(
-              userinfo.preferred_username || userinfo.username || userinfo.email,
-            );
-          }
-
-          if (!user) {
-            user = {
-              provider: 'openid',
-              openidId: userinfo.sub,
-              username: email || '',
-              email: email || '',
-              emailVerified: userinfo.email_verified || false,
-              name: fullName,
-              idOnTheSource: userinfo.oid,
-            };
+  if (!user) {
+    user = {
+      provider: 'openid',
+      openidId: userinfo.sub,
+      username: email || '',
+      email: email || '',
+      emailVerified: userinfo.email_verified || false,
+      name: fullName,
+      idOnTheSource: userinfo.oid,
+    };
 
             const balanceConfig = getBalanceConfig(appConfig);
             user = await createUser(user, balanceConfig, true, true);
@@ -461,81 +409,78 @@ async function setupOpenId() {
             }
           }
 
-          if (adminRole && adminRoleParameterPath && adminRoleTokenKind) {
-            let adminRoleObject;
-            switch (adminRoleTokenKind) {
-              case 'access':
-                adminRoleObject = jwtDecode(tokenset.access_token);
-                break;
-              case 'id':
-                adminRoleObject = jwtDecode(tokenset.id_token);
-                break;
-              case 'userinfo':
-                adminRoleObject = userinfo;
-                break;
-              default:
-                logger.error(
-                  `[openidStrategy] Invalid admin role token kind: ${adminRoleTokenKind}. Must be one of 'access', 'id', or 'userinfo'.`,
-                );
-                return done(new Error('Invalid admin role token kind'));
-            }
+  const adminRole = process.env.OPENID_ADMIN_ROLE;
+  const adminRoleParameterPath = process.env.OPENID_ADMIN_ROLE_PARAMETER_PATH;
+  const adminRoleTokenKind = process.env.OPENID_ADMIN_ROLE_TOKEN_KIND;
 
-            const adminRoles = get(adminRoleObject, adminRoleParameterPath);
+  if (adminRole && adminRoleParameterPath && adminRoleTokenKind) {
+    let adminRoleObject;
+    switch (adminRoleTokenKind) {
+      case 'access':
+        adminRoleObject = jwtDecode(tokenset.access_token);
+        break;
+      case 'id':
+        adminRoleObject = jwtDecode(tokenset.id_token);
+        break;
+      case 'userinfo':
+        adminRoleObject = userinfo;
+        break;
+      default:
+        logger.error(
+          `[openidStrategy] Invalid admin role token kind: ${adminRoleTokenKind}. Must be one of 'access', 'id', or 'userinfo'.`,
+        );
+        throw new Error('Invalid admin role token kind');
+    }
 
-            // Accept 3 types of values for the object extracted from adminRoleParameterPath:
-            // 1. A boolean value indicating if the user is an admin
-            // 2. A string with a single role name
-            // 3. An array of role names
+    const adminRoles = get(adminRoleObject, adminRoleParameterPath);
 
-            if (
-              adminRoles &&
-              (adminRoles === true ||
-                adminRoles === adminRole ||
-                (Array.isArray(adminRoles) && adminRoles.includes(adminRole)))
-            ) {
-              user.role = 'ADMIN';
-              logger.info(
-                `[openidStrategy] User ${username} is an admin based on role: ${adminRole}`,
-              );
-            } else if (user.role === 'ADMIN') {
-              user.role = 'USER';
-              logger.info(
-                `[openidStrategy] User ${username} demoted from admin - role no longer present in token`,
-              );
-            }
-          }
+    if (
+      adminRoles &&
+      (adminRoles === true ||
+        adminRoles === adminRole ||
+        (Array.isArray(adminRoles) && adminRoles.includes(adminRole)))
+    ) {
+      user.role = SystemRoles.ADMIN;
+      logger.info(`[openidStrategy] User ${username} is an admin based on role: ${adminRole}`);
+    } else if (user.role === SystemRoles.ADMIN) {
+      user.role = SystemRoles.USER;
+      logger.info(
+        `[openidStrategy] User ${username} demoted from admin - role no longer present in token`,
+      );
+    }
+  }
 
-          if (!!userinfo && userinfo.picture && !user.avatar?.includes('manual=true')) {
-            /** @type {string | undefined} */
-            const imageUrl = userinfo.picture;
+  if (!!userinfo && userinfo.picture && !user.avatar?.includes('manual=true')) {
+    /** @type {string | undefined} */
+    const imageUrl = userinfo.picture;
 
-            let fileName;
-            if (crypto) {
-              fileName = (await hashToken(userinfo.sub)) + '.png';
-            } else {
-              fileName = userinfo.sub + '.png';
-            }
+    let fileName;
+    if (crypto) {
+      fileName = (await hashToken(userinfo.sub)) + '.png';
+    } else {
+      fileName = userinfo.sub + '.png';
+    }
 
-            const imageBuffer = await downloadImage(
-              imageUrl,
-              openidConfig,
-              tokenset.access_token,
-              userinfo.sub,
-            );
-            if (imageBuffer) {
-              const { saveBuffer } = getStrategyFunctions(
-                appConfig?.fileStrategy ?? process.env.CDN_PROVIDER,
-              );
-              const imagePath = await saveBuffer({
-                fileName,
-                userId: user._id.toString(),
-                buffer: imageBuffer,
-              });
-              user.avatar = imagePath ?? '';
-            }
-          }
+    const imageBuffer = await downloadImage(
+      imageUrl,
+      openidConfig,
+      tokenset.access_token,
+      userinfo.sub,
+    );
+    if (imageBuffer) {
+      const { saveBuffer } = getStrategyFunctions(
+        appConfig?.fileStrategy ?? process.env.CDN_PROVIDER,
+      );
+      const imagePath = await saveBuffer({
+        fileName,
+        userId: user._id.toString(),
+        buffer: imageBuffer,
+      });
+      user.avatar = imagePath ?? '';
+    }
+  }
 
-          user = await updateUser(user._id, user);
+  user = await updateUser(user._id, user);
 
           await updateUserKey({
             userId: user._id.toString(),
@@ -591,28 +536,131 @@ async function setupOpenId() {
             },
           );
 
-          done(null, {
-            ...user,
-            tokenset,
-            federatedTokens: {
-              access_token: tokenset.access_token,
-              refresh_token: tokenset.refresh_token,
-              expires_at: tokenset.expires_at,
-            },
-          });
-        } catch (err) {
-          logger.error('[openidStrategy] login failed', err);
-          done(err);
-        }
+  return {
+    ...user,
+    tokenset,
+    federatedTokens: {
+      access_token: tokenset.access_token,
+      refresh_token: tokenset.refresh_token,
+      expires_at: tokenset.expires_at,
+    },
+  };
+}
+
+/**
+ * @param {boolean | undefined} [existingUsersOnly]
+ */
+function createOpenIDCallback(existingUsersOnly) {
+  return async (tokenset, done) => {
+    try {
+      const user = await processOpenIDAuth(tokenset, existingUsersOnly);
+      done(null, user);
+    } catch (err) {
+      if (err.message === 'Email domain not allowed') {
+        return done(null, false, { message: err.message });
+      }
+      if (err.message === ErrorTypes.AUTH_FAILED) {
+        return done(null, false, { message: err.message });
+      }
+      if (err.message && err.message.includes('role to log in')) {
+        return done(null, false, { message: err.message });
+      }
+      logger.error('[openidStrategy] login failed', err);
+      done(err);
+    }
+  };
+}
+
+/**
+ * Sets up the OpenID strategy specifically for admin authentication.
+ * @param {Configuration} openidConfig
+ */
+const setupOpenIdAdmin = (openidConfig) => {
+  try {
+    if (!openidConfig) {
+      throw new Error('OpenID configuration not initialized');
+    }
+
+    const openidAdminLogin = new CustomOpenIDStrategy(
+      {
+        config: openidConfig,
+        scope: process.env.OPENID_SCOPE,
+        usePKCE: isEnabled(process.env.OPENID_USE_PKCE),
+        clockTolerance: process.env.OPENID_CLOCK_TOLERANCE || 300,
+        callbackURL: process.env.DOMAIN_SERVER + '/api/admin/oauth/openid/callback',
+      },
+      createOpenIDCallback(true),
+    );
+
+    passport.use('openidAdmin', openidAdminLogin);
+  } catch (err) {
+    logger.error('[openidStrategy] setupOpenIdAdmin', err);
+  }
+};
+
+/**
+ * Sets up the OpenID strategy for authentication.
+ * This function configures the OpenID client, handles proxy settings,
+ * and defines the OpenID strategy for Passport.js.
+ *
+ * @async
+ * @function setupOpenId
+ * @returns {Promise<Configuration | null>} A promise that resolves when the OpenID strategy is set up and returns the openid client config object.
+ * @throws {Error} If an error occurs during the setup process.
+ */
+async function setupOpenId() {
+  try {
+    const shouldGenerateNonce = isEnabled(process.env.OPENID_GENERATE_NONCE);
+
+    /** @type {ClientMetadata} */
+    const clientMetadata = {
+      client_id: process.env.OPENID_CLIENT_ID,
+      client_secret: process.env.OPENID_CLIENT_SECRET,
+    };
+
+    if (shouldGenerateNonce) {
+      clientMetadata.response_types = ['code'];
+      clientMetadata.grant_types = ['authorization_code'];
+      clientMetadata.token_endpoint_auth_method = 'client_secret_post';
+    }
+
+    /** @type {Configuration} */
+    openidConfig = await client.discovery(
+      new URL(process.env.OPENID_ISSUER),
+      process.env.OPENID_CLIENT_ID,
+      clientMetadata,
+      undefined,
+      {
+        [client.customFetch]: customFetch,
       },
     );
+
+    logger.info(`[openidStrategy] OpenID authentication configuration`, {
+      generateNonce: shouldGenerateNonce,
+      reason: shouldGenerateNonce
+        ? 'OPENID_GENERATE_NONCE=true - Will generate nonce and use explicit metadata for federated providers'
+        : 'OPENID_GENERATE_NONCE=false - Standard flow without explicit nonce or metadata',
+    });
+
+    const openidLogin = new CustomOpenIDStrategy(
+      {
+        config: openidConfig,
+        scope: process.env.OPENID_SCOPE,
+        callbackURL: process.env.DOMAIN_SERVER + process.env.OPENID_CALLBACK_URL,
+        clockTolerance: process.env.OPENID_CLOCK_TOLERANCE || 300,
+        usePKCE: isEnabled(process.env.OPENID_USE_PKCE),
+      },
+      createOpenIDCallback(),
+    );
     passport.use('openid', openidLogin);
+    setupOpenIdAdmin(openidConfig);
     return openidConfig;
   } catch (err) {
     logger.error('[openidStrategy]', err);
     return null;
   }
 }
+
 /**
  * @function getOpenIdConfig
  * @description Returns the OpenID client instance.

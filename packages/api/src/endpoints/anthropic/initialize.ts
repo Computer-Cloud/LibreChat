@@ -77,7 +77,6 @@ export async function initializeAnthropic({
     ...(vertexConfig && { vertexConfig }),
   };
 
-  /** @type {undefined | TBaseEndpoint} */
   const anthropicConfig = appConfig?.endpoints?.[EModelEndpoint.anthropic];
   const allConfig = appConfig?.endpoints?.all;
 
