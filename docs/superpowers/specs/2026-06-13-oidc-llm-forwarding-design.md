@@ -324,6 +324,19 @@ if (isLLMOIDCForwardingEnabled() && req.user?.provider === 'openid' && refreshOI
 | `packages/api/src/endpoints/anthropic/initialize.ts` | After `anthropicApiKey` resolution, before `getLLMConfig` | Set `credentials[AuthKeys.ANTHROPIC_API_KEY] = accessToken` |
 | `packages/api/src/endpoints/custom/initialize.ts` | After `apiKey` resolution, before `getOpenAIConfig` | `userProvidesURL` guard above |
 | `api/server/services/Endpoints/azureAssistants/initialize.js` | After `resolveHeaders`, before client build | Same `clientOptions.azure` substitution as OpenAI Azure |
+| `api/server/services/Endpoints/assistants/initalize.js` | After `apiKey` resolution, before SDK construction | `userProvidesURL` guard above (mirrors custom) |
+
+**Out of scope (intentional):** `api/server/services/Endpoints/bedrock/*` and
+`api/server/services/Endpoints/google/*` are not modified. AWS Bedrock and
+Google Vertex/Gemini authenticate via AWS SigV4 and GCP service-account /
+OAuth-2.0-service-account flows respectively — both are incompatible with
+forwarding an arbitrary IdP-issued bearer as the credential. Operators who
+need OIDC-forwarding semantics for those providers must front them with a
+gateway that performs the SigV4 / GCP exchange server-side. The boot guard
+(§5.5) makes the omission safe in practice: OIDC-only deployments don't
+realistically configure bedrock/google endpoints alongside the chat-completion
+endpoints listed above, and if they do, the user lands on the env-configured
+provider credentials (today's behavior).
 
 ### 5.4 Legacy Removal
 
@@ -412,6 +425,7 @@ OIDC access tokens are typically ≥3600s; the 60s leeway pre-refreshes anything
 | Legacy `uid-` rows leak post-cutover | Optional opt-in cleanup script; gateway-side deprecation after T+30d |
 | Refresh token leakage | Stays in server-side session + httpOnly cookie; never crosses into `federatedTokens` consumers other than this module |
 | Bypass when `OIDC_FORWARD_TO_LLM=false` | `ensureLLMBearer` short-circuits on `provider !== 'openid'` regardless of the flag, preserving fallback path integrity |
+| Bedrock / Google endpoints silently use env credentials when flag is on | By design — those endpoints fall outside §5.3.3 (AWS SigV4 / GCP service-account flows are incompatible with bearer forwarding). The §5.5 boot guard, combined with the operational expectation that OIDC-only deployments do not co-configure bedrock/google, prevents accidental credential mixing. Explicitly documented in §5.3.3 to avoid future "missed file" regressions. |
 
 ### 6.6 Tenant Compatibility
 
