@@ -236,3 +236,62 @@ describe('configureSocialLogins — OIDC_FORWARD_TO_LLM guard', () => {
     await expect(configureSocialLogins(app)).rejects.toThrow(/OIDC_FORWARD_TO_LLM.*google/i);
   });
 });
+
+/**
+ * Regression: the C6 guard was placed inside configureSocialLogins, which
+ * api/server/index.js only invokes when ALLOW_SOCIAL_LOGIN=true. The
+ * unconditionally-registered local passportLogin meant pre-existing
+ * provider:'local' users could still log in and hit ensureLLMBearer with an
+ * opaque AUTH_FAILED. C7 extracts the guard so it can be called independently.
+ */
+describe('assertOIDCForwardingCompatible (called independently of configureSocialLogins)', () => {
+  const ORIGINAL_ENV = process.env;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env = {};
+    mockIsEnabled.mockImplementation((value) => value === 'true');
+  });
+
+  afterAll(() => {
+    process.env = ORIGINAL_ENV;
+  });
+
+  it('throws when OIDC_FORWARD_TO_LLM=true and email login defaults on, regardless of ALLOW_SOCIAL_LOGIN', () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    delete process.env.ALLOW_SOCIAL_LOGIN;
+    delete process.env.ALLOW_EMAIL_LOGIN;
+    delete process.env.GOOGLE_CLIENT_ID;
+    delete process.env.GOOGLE_CLIENT_SECRET;
+    delete process.env.GITHUB_CLIENT_ID;
+    delete process.env.GITHUB_CLIENT_SECRET;
+    delete process.env.FACEBOOK_CLIENT_ID;
+    delete process.env.FACEBOOK_CLIENT_SECRET;
+    delete process.env.DISCORD_CLIENT_ID;
+    delete process.env.DISCORD_CLIENT_SECRET;
+    delete process.env.APPLE_CLIENT_ID;
+    delete process.env.APPLE_PRIVATE_KEY_PATH;
+    delete process.env.SAML_ENTRY_POINT;
+    delete process.env.LDAP_URL;
+    const { assertOIDCForwardingCompatible } = require('./socialLogins');
+    expect(() => assertOIDCForwardingCompatible()).toThrow(/OIDC_FORWARD_TO_LLM.*local/i);
+  });
+
+  it('throws when OIDC_FORWARD_TO_LLM=true and ALLOW_SOCIAL_LOGIN=false but GOOGLE_CLIENT_ID set', () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    process.env.ALLOW_SOCIAL_LOGIN = 'false';
+    process.env.ALLOW_EMAIL_LOGIN = 'false';
+    process.env.GOOGLE_CLIENT_ID = 'x';
+    process.env.GOOGLE_CLIENT_SECRET = 'x';
+    const { assertOIDCForwardingCompatible } = require('./socialLogins');
+    expect(() => assertOIDCForwardingCompatible()).toThrow(/OIDC_FORWARD_TO_LLM.*google/i);
+  });
+
+  it('is a no-op when OIDC_FORWARD_TO_LLM is unset', () => {
+    delete process.env.OIDC_FORWARD_TO_LLM;
+    process.env.GOOGLE_CLIENT_ID = 'x';
+    process.env.GOOGLE_CLIENT_SECRET = 'x';
+    const { assertOIDCForwardingCompatible } = require('./socialLogins');
+    expect(() => assertOIDCForwardingCompatible()).not.toThrow();
+  });
+});

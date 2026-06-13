@@ -72,6 +72,70 @@ async function configureOpenId(app) {
 }
 
 /**
+ * Defense-in-depth invariant: forwarding the user's OIDC access_token to the
+ * LLM gateway requires every authenticated user to actually possess one. Any
+ * login strategy that produces a session without populating federatedTokens
+ * would let those users reach the LLM call path and fail at ensureLLMBearer
+ * with AUTH_FAILED — a confusing 500-equivalent rather than a clean
+ * configuration error at boot.
+ *
+ * Exported so callers can invoke it unconditionally — configureSocialLogins
+ * itself is only called when ALLOW_SOCIAL_LOGIN=true, but local passport
+ * (`passportLogin`) is registered unconditionally at index.js:220, so the
+ * invariant must be checked regardless of ALLOW_SOCIAL_LOGIN's value.
+ *
+ * We mirror the EXACT env conditions each provider in this file (and
+ * elsewhere) uses to register its strategy — NOT the ALLOW_*_LOGIN flags
+ * which only control button visibility in routes/config.js. And we mirror
+ * routes/config.js's default-on semantics for ALLOW_EMAIL_LOGIN.
+ *
+ * Idempotent and cheap: safe to call multiple times at boot.
+ */
+const assertOIDCForwardingCompatible = () => {
+  if (!isEnabled(process.env.OIDC_FORWARD_TO_LLM)) {
+    return;
+  }
+  const enabledNonOIDC = [];
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+    enabledNonOIDC.push('google');
+  }
+  if (process.env.FACEBOOK_CLIENT_ID && process.env.FACEBOOK_CLIENT_SECRET) {
+    enabledNonOIDC.push('facebook');
+  }
+  if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
+    enabledNonOIDC.push('github');
+  }
+  if (process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET) {
+    enabledNonOIDC.push('discord');
+  }
+  if (process.env.APPLE_CLIENT_ID && process.env.APPLE_PRIVATE_KEY_PATH) {
+    enabledNonOIDC.push('apple');
+  }
+  if (
+    process.env.SAML_ENTRY_POINT &&
+    process.env.SAML_ISSUER &&
+    process.env.SAML_CERT &&
+    process.env.SAML_SESSION_SECRET
+  ) {
+    enabledNonOIDC.push('saml');
+  }
+  if (process.env.LDAP_URL && process.env.LDAP_USER_SEARCH_BASE) {
+    enabledNonOIDC.push('ldap');
+  }
+  const emailLoginEnabled =
+    process.env.ALLOW_EMAIL_LOGIN === undefined || isEnabled(process.env.ALLOW_EMAIL_LOGIN);
+  if (emailLoginEnabled) {
+    enabledNonOIDC.push('local');
+  }
+  if (enabledNonOIDC.length > 0) {
+    throw new Error(
+      `OIDC_FORWARD_TO_LLM is enabled but non-OIDC providers are also enabled: ${enabledNonOIDC.join(', ')}. ` +
+        'Disable them or unset OIDC_FORWARD_TO_LLM.',
+    );
+  }
+};
+
+/**
  *
  * @param {Express.Application} app
  */
@@ -132,59 +196,11 @@ const configureSocialLogins = async (app) => {
     logger.info('SAML Connect configured.');
   }
 
-  if (isEnabled(process.env.OIDC_FORWARD_TO_LLM)) {
-    /**
-     * Defense-in-depth invariant: forwarding the user's OIDC access_token to
-     * the LLM gateway requires every authenticated user to actually possess
-     * one. Any login strategy that produces a session without populating
-     * federatedTokens would let those users reach the LLM call path and fail
-     * at ensureLLMBearer with AUTH_FAILED — a confusing 500-equivalent rather
-     * than a clean configuration error at boot.
-     *
-     * We mirror the EXACT env conditions each provider in this file (and
-     * elsewhere) uses to register its strategy — NOT the ALLOW_*_LOGIN flags
-     * which only control button visibility in routes/config.js. And we mirror
-     * routes/config.js's default-on semantics for ALLOW_EMAIL_LOGIN.
-     */
-    const enabledNonOIDC = [];
-    if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
-      enabledNonOIDC.push('google');
-    }
-    if (process.env.FACEBOOK_CLIENT_ID && process.env.FACEBOOK_CLIENT_SECRET) {
-      enabledNonOIDC.push('facebook');
-    }
-    if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
-      enabledNonOIDC.push('github');
-    }
-    if (process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET) {
-      enabledNonOIDC.push('discord');
-    }
-    if (process.env.APPLE_CLIENT_ID && process.env.APPLE_PRIVATE_KEY_PATH) {
-      enabledNonOIDC.push('apple');
-    }
-    if (
-      process.env.SAML_ENTRY_POINT &&
-      process.env.SAML_ISSUER &&
-      process.env.SAML_CERT &&
-      process.env.SAML_SESSION_SECRET
-    ) {
-      enabledNonOIDC.push('saml');
-    }
-    if (process.env.LDAP_URL && process.env.LDAP_USER_SEARCH_BASE) {
-      enabledNonOIDC.push('ldap');
-    }
-    const emailLoginEnabled =
-      process.env.ALLOW_EMAIL_LOGIN === undefined || isEnabled(process.env.ALLOW_EMAIL_LOGIN);
-    if (emailLoginEnabled) {
-      enabledNonOIDC.push('local');
-    }
-    if (enabledNonOIDC.length > 0) {
-      throw new Error(
-        `OIDC_FORWARD_TO_LLM is enabled but non-OIDC providers are also enabled: ${enabledNonOIDC.join(', ')}. ` +
-          'Disable them or unset OIDC_FORWARD_TO_LLM.',
-      );
-    }
-  }
+  // Defense-in-depth guard — also called unconditionally from index.js /
+  // experimental.js at boot so it runs even when ALLOW_SOCIAL_LOGIN=false.
+  // Idempotent; cheap to call twice.
+  assertOIDCForwardingCompatible();
 };
 
 module.exports = configureSocialLogins;
+module.exports.assertOIDCForwardingCompatible = assertOIDCForwardingCompatible;

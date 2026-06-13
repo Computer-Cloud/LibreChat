@@ -45,6 +45,7 @@ const { checkMigrations } = require('./services/start/migration');
 const optionalJwtAuth = require('./middleware/optionalJwtAuth');
 const initializeMCPs = require('./services/initializeMCPs');
 const configureSocialLogins = require('./socialLogins');
+const { assertOIDCForwardingCompatible } = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
 const { getAppConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
@@ -223,6 +224,11 @@ const startServer = async () => {
   if (process.env.LDAP_URL && process.env.LDAP_USER_SEARCH_BASE) {
     passport.use(ldapLogin);
   }
+
+  /* OIDC-forwarding invariant must run unconditionally — passportLogin (local)
+   * and ldapLogin above are registered without ALLOW_SOCIAL_LOGIN, so the
+   * guard inside configureSocialLogins would be bypassed otherwise. */
+  assertOIDCForwardingCompatible();
 
   if (isEnabled(ALLOW_SOCIAL_LOGIN)) {
     await configureSocialLogins(app);
