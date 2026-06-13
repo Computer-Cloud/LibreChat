@@ -2,7 +2,7 @@ const undici = require('undici');
 const fetch = require('node-fetch');
 const jwtDecode = require('jsonwebtoken/decode');
 const { ErrorTypes, FileSources } = require('librechat-data-provider');
-const { findUser, createUser, updateUser, findRolesByNames } = require('~/models');
+const { findUser, createUser, updateUser, updateUserKey, findRolesByNames } = require('~/models');
 const { getOpenIdIssuer, resolveAppConfigForUser, isEnabled } = require('@librechat/api');
 const { resizeAvatar } = require('~/server/services/Files/images/avatar');
 const { getAppConfig } = require('~/server/services/Config');
@@ -1575,6 +1575,18 @@ describe('setupOpenId', () => {
     expect(user.tokenset.id_token).toBe('test_id_token');
     expect(user.federatedTokens.access_token).toBe('test_access_token');
     expect(user.federatedTokens.id_token).toBe('test_id_token');
+  });
+
+  it('does not call updateUserKey during OIDC login (legacy uid- removed)', async () => {
+    // Regression guard for PR-2 C5: the synthetic `uid-${openidId}` per-endpoint
+    // auto-import was replaced by OIDC access_token forwarding (C4). The five
+    // legacy updateUserKey blocks must stay deleted.
+    updateUserKey.mockClear();
+
+    const { user } = await validate(tokenset);
+
+    expect(user).toBeDefined();
+    expect(updateUserKey).not.toHaveBeenCalled();
   });
 
   it('should set role to "ADMIN" if OPENID_ADMIN_ROLE is set and user has that role', async () => {
