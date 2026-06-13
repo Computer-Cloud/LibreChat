@@ -35,6 +35,7 @@ const {
   createOpenAIContentAggregator,
   isChatCompletionValidationFailure,
 } = require('@librechat/api');
+const { refreshOIDCAccessToken } = require('~/server/services/Auth/refreshOIDCToken');
 const {
   buildSummarizationHandlers,
   markSummarizationUsage,
@@ -337,6 +338,7 @@ const OpenAIChatCompletionController = async (req, res) => {
         skillStates,
         defaultActiveOnShare,
         manualSkills,
+        refreshOIDCAccessToken,
       },
       dbMethods,
     );
@@ -411,6 +413,7 @@ const OpenAIChatCompletionController = async (req, res) => {
           defaultActiveOnShare,
           /** @see DiscoverConnectedAgentsParams.codeEnvAvailable */
           codeEnvAvailable: enabledCapabilities.has(AgentCapabilities.execute_code),
+          refreshOIDCAccessToken,
         },
         {
           getAgent: db.getAgent,

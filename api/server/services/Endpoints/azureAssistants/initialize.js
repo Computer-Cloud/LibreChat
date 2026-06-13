@@ -5,9 +5,12 @@ const {
   resolveHeaders,
   constructAzureURL,
   checkUserKeyExpiry,
+  ensureLLMBearer,
+  isLLMOIDCForwardingEnabled,
 } = require('@librechat/api');
 const { ErrorTypes, EModelEndpoint, mapModelToAzureConfig } = require('librechat-data-provider');
 const { getUserKeyValues, getUserKeyExpiry } = require('~/models');
+const { refreshOIDCAccessToken } = require('~/server/services/Auth/refreshOIDCToken');
 
 class Files {
   constructor(client) {
@@ -151,6 +154,18 @@ const initializeClient = async ({ req, res, version, endpointOption, initAppClie
 
   if (!apiKey) {
     throw new Error('Assistants API key not provided. Please provide it again.');
+  }
+
+  // Fork-only: forward the user's OIDC access_token as the Azure API key.
+  // Azure assistants use the `api-key` header (resolveHeaders inserts it above
+  // for the configured-azure path); when the flag is on we replace both the
+  // SDK constructor apiKey and any pre-built `api-key` header value.
+  if (isLLMOIDCForwardingEnabled() && req.user?.provider === 'openid') {
+    const { accessToken } = await ensureLLMBearer(req, { refreshOIDCAccessToken });
+    apiKey = accessToken;
+    if (opts.defaultHeaders && opts.defaultHeaders['api-key']) {
+      opts.defaultHeaders = { ...opts.defaultHeaders, 'api-key': accessToken };
+    }
   }
 
   if (baseURL) {

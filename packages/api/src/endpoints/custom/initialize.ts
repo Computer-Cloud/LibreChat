@@ -7,6 +7,7 @@ import {
 import type { TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { BaseInitializeParams, InitializeResultBase, EndpointTokenConfig } from '~/types';
+import { ensureLLMBearer, isLLMOIDCForwardingEnabled } from '~/auth/llmBearer';
 import { isUserProvided, checkUserKeyExpiry } from '~/utils';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { getCustomEndpointConfig } from '~/app/config';
@@ -61,6 +62,7 @@ export async function initializeCustom({
   endpoint,
   model_parameters,
   db,
+  refreshOIDCAccessToken,
 }: BaseInitializeParams): Promise<InitializeResultBase> {
   const appConfig = req.config;
   const { key: expiresAt } = req.body;
@@ -100,7 +102,7 @@ export async function initializeCustom({
     userValues = await db.getUserKeyValues({ userId: req.user?.id ?? '', name: endpoint });
   }
 
-  const apiKey = userProvidesKey ? userValues?.apiKey : CUSTOM_API_KEY;
+  let apiKey = userProvidesKey ? userValues?.apiKey : CUSTOM_API_KEY;
   const baseURL = userProvidesURL ? userValues?.baseURL : CUSTOM_BASE_URL;
 
   if (userProvidesKey && !apiKey) {
@@ -197,6 +199,20 @@ export async function initializeCustom({
     modelOptions,
     ...clientOptions,
   };
+
+  // Fork-only: forward the user's OIDC access_token as the API key. Custom
+  // endpoints with user-provided baseURL are rejected outright to prevent
+  // token exfiltration to attacker-controlled hosts.
+  if (isLLMOIDCForwardingEnabled() && req.user?.provider === 'openid' && refreshOIDCAccessToken) {
+    if (userProvidesURL) {
+      throw new Error(
+        JSON.stringify({ type: ErrorTypes.AUTH_FAILED }) +
+          ' — user-provided baseURL disallowed when forwarding OIDC bearer',
+      );
+    }
+    const { accessToken } = await ensureLLMBearer(req, { refreshOIDCAccessToken });
+    apiKey = accessToken;
+  }
 
   const options = getOpenAIConfig(apiKey, finalClientOptions, endpoint);
   if (options != null) {

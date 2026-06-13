@@ -62,6 +62,7 @@ const {
   removeNullishValues,
   DEFAULT_MEMORY_MAX_INPUT_TOKENS,
 } = require('librechat-data-provider');
+const { refreshOIDCAccessToken } = require('~/server/services/Auth/refreshOIDCToken');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { encodeAndFormat } = require('~/server/services/Files/images/encode');
 const { createContextHandlers } = require('~/app/clients/prompts');
@@ -634,6 +635,7 @@ class AgentClient extends BaseClient {
             : memoryConfig.agent?.provider,
         },
         codeEnvAvailable: memoryCapabilities.has(AgentCapabilities.execute_code),
+        refreshOIDCAccessToken,
       },
       {
         getFiles: db.getFiles,
@@ -1415,6 +1417,7 @@ class AgentClient extends BaseClient {
         getUserKey: db.getUserKey,
         getUserKeyValues: db.getUserKeyValues,
       },
+      refreshOIDCAccessToken,
     });
 
     let provider = options.provider ?? titleProviderConfig.overrideProvider ?? agent.provider;

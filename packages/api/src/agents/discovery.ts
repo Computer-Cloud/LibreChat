@@ -2,17 +2,17 @@ import { logger } from '@librechat/data-schemas';
 import { ResourceType, PermissionBits, EModelEndpoint } from 'librechat-data-provider';
 import type { Agent, GraphEdge, TModelsConfig, TEndpointOption } from 'librechat-data-provider';
 import type { Response as ServerResponse } from 'express';
-import type { ServerRequest } from '~/types';
 import type {
   InitializedAgent,
   InitializeAgentParams,
   InitializeAgentDbMethods,
 } from './initialize';
 import type { ValidateAgentModelParams } from './validation';
-import { createEdgeCollector, filterOrphanedEdges } from './edges';
-import { createSequentialChainEdges } from './chain';
+import type { ServerRequest } from '~/types';
 import { validateAgentModel as defaultValidateAgentModel } from './validation';
 import { initializeAgent as defaultInitializeAgent } from './initialize';
+import { createEdgeCollector, filterOrphanedEdges } from './edges';
+import { createSequentialChainEdges } from './chain';
 
 /**
  * Callback invoked after a sub-agent is successfully initialized.
@@ -88,6 +88,8 @@ export interface DiscoverConnectedAgentsParams {
    * code-execution tooling even though their parent had it.
    */
   codeEnvAvailable?: InitializeAgentParams['codeEnvAvailable'];
+  /** OIDC access_token forwarding bridge, propagated to each sub-agent. */
+  refreshOIDCAccessToken?: InitializeAgentParams['refreshOIDCAccessToken'];
 }
 
 export interface DiscoverConnectedAgentsDeps {
@@ -157,6 +159,7 @@ export async function discoverConnectedAgents(
     skillStates,
     defaultActiveOnShare,
     codeEnvAvailable,
+    refreshOIDCAccessToken,
   } = params;
 
   const {
@@ -260,6 +263,7 @@ export async function discoverConnectedAgents(
         skillStates,
         defaultActiveOnShare,
         codeEnvAvailable,
+        refreshOIDCAccessToken,
       },
       db,
     );

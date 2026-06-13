@@ -19,6 +19,8 @@ jest.mock('~/utils', () => ({
   resolveHeaders: jest.fn(() => ({})),
   isUserProvided: (val: string) => val === 'user_provided',
   checkUserKeyExpiry: jest.fn(),
+  isEnabled: (val: unknown) =>
+    typeof val === 'string' && ['true', '1', 'yes', 'on'].includes(val.toLowerCase()),
 }));
 
 import { initializeOpenAI } from './initialize';
@@ -60,6 +62,101 @@ function createParams(env: Record<string, string | undefined>): BaseInitializePa
 
   return Object.assign(params, { _restore: restore });
 }
+
+describe('initializeOpenAI — OIDC apiKey override', () => {
+  const ORIGINAL = process.env.OIDC_FORWARD_TO_LLM;
+  const ORIGINAL_KEY = process.env.OPENAI_API_KEY;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.OIDC_FORWARD_TO_LLM;
+    else process.env.OIDC_FORWARD_TO_LLM = ORIGINAL;
+    if (ORIGINAL_KEY === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = ORIGINAL_KEY;
+    jest.clearAllMocks();
+  });
+
+  const futureExpiry = () => Math.floor(Date.now() / 1000) + 3600;
+
+  it('replaces apiKey with OIDC access_token when flag on and user is OIDC', async () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    process.env.OPENAI_API_KEY = 'env-key';
+    mockGetOpenAIConfig.mockReturnValue({ llmConfig: {} });
+    await initializeOpenAI({
+      req: {
+        user: {
+          _id: 'u1',
+          id: 'u1',
+          provider: 'openid',
+          federatedTokens: {
+            access_token: 'oidc-jwt',
+            id_token: 'oidc-id',
+            refresh_token: 'oidc-r',
+            expires_at: futureExpiry(),
+          },
+        },
+        body: {},
+        config: { endpoints: {} },
+      } as unknown as BaseInitializeParams['req'],
+      endpoint: EModelEndpoint.openAI,
+      model_parameters: { model: 'gpt-4' },
+      db: { getUserKeyValues: jest.fn() } as unknown as BaseInitializeParams['db'],
+      refreshOIDCAccessToken: jest.fn(),
+    });
+    expect(mockGetOpenAIConfig).toHaveBeenCalledWith(
+      'oidc-jwt',
+      expect.any(Object),
+      EModelEndpoint.openAI,
+    );
+  });
+
+  it('falls back to env apiKey when flag off', async () => {
+    delete process.env.OIDC_FORWARD_TO_LLM;
+    process.env.OPENAI_API_KEY = 'env-key';
+    mockGetOpenAIConfig.mockReturnValue({ llmConfig: {} });
+    await initializeOpenAI({
+      req: {
+        user: {
+          _id: 'u1',
+          id: 'u1',
+          provider: 'openid',
+          federatedTokens: { access_token: 'oidc-jwt', expires_at: futureExpiry() },
+        },
+        body: {},
+        config: { endpoints: {} },
+      } as unknown as BaseInitializeParams['req'],
+      endpoint: EModelEndpoint.openAI,
+      model_parameters: { model: 'gpt-4' },
+      db: { getUserKeyValues: jest.fn() } as unknown as BaseInitializeParams['db'],
+      refreshOIDCAccessToken: jest.fn(),
+    });
+    expect(mockGetOpenAIConfig).toHaveBeenCalledWith(
+      'env-key',
+      expect.any(Object),
+      EModelEndpoint.openAI,
+    );
+  });
+
+  it('falls back to env apiKey when flag on but user is not OIDC', async () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    process.env.OPENAI_API_KEY = 'env-key';
+    mockGetOpenAIConfig.mockReturnValue({ llmConfig: {} });
+    await initializeOpenAI({
+      req: {
+        user: { _id: 'u1', id: 'u1', provider: 'local' },
+        body: {},
+        config: { endpoints: {} },
+      } as unknown as BaseInitializeParams['req'],
+      endpoint: EModelEndpoint.openAI,
+      model_parameters: { model: 'gpt-4' },
+      db: { getUserKeyValues: jest.fn() } as unknown as BaseInitializeParams['db'],
+      refreshOIDCAccessToken: jest.fn(),
+    });
+    expect(mockGetOpenAIConfig).toHaveBeenCalledWith(
+      'env-key',
+      expect.any(Object),
+      EModelEndpoint.openAI,
+    );
+  });
+});
 
 describe('initializeOpenAI – SSRF guard wiring', () => {
   afterEach(() => {

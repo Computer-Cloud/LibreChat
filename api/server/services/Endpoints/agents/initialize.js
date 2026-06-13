@@ -29,6 +29,7 @@ const {
   getDefaultHandlers,
 } = require('~/server/controllers/agents/callbacks');
 const { loadAgentTools, loadToolsForExecution } = require('~/server/services/ToolService');
+const { refreshOIDCAccessToken } = require('~/server/services/Auth/refreshOIDCToken');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const {
   getSkillToolDeps,
@@ -364,6 +365,7 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
       skillStates,
       defaultActiveOnShare,
       manualSkills,
+      refreshOIDCAccessToken,
     },
     {
       getFiles: db.getFiles,
@@ -431,6 +433,7 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
       skillStates,
       defaultActiveOnShare,
       codeEnvAvailable,
+      refreshOIDCAccessToken,
     },
     {
       getAgent: db.getAgent,
@@ -642,6 +645,7 @@ const initializeClient = async ({ req, res, signal, endpointOption }) => {
           codeEnvAvailable,
           skillStates,
           defaultActiveOnShare,
+          refreshOIDCAccessToken,
         },
         {
           getFiles: db.getFiles,

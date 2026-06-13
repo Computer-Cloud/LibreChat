@@ -43,6 +43,7 @@ const {
   createResponsesEventHandlers,
   createAggregatorEventHandlers,
 } = require('@librechat/api');
+const { refreshOIDCAccessToken } = require('~/server/services/Auth/refreshOIDCToken');
 const {
   createResponsesToolEndCallback,
   buildSummarizationHandlers,
@@ -456,6 +457,7 @@ const createResponse = async (req, res) => {
         skillStates,
         defaultActiveOnShare,
         manualSkills,
+        refreshOIDCAccessToken,
       },
       dbMethods,
     );
@@ -530,6 +532,7 @@ const createResponse = async (req, res) => {
           defaultActiveOnShare,
           /** @see DiscoverConnectedAgentsParams.codeEnvAvailable */
           codeEnvAvailable: enabledCapabilities.has(AgentCapabilities.execute_code),
+          refreshOIDCAccessToken,
         },
         {
           getAgent: db.getAgent,
