@@ -1368,3 +1368,28 @@ describe('registerUser - allowedDomains admin-panel override', () => {
     expect(findUser).not.toHaveBeenCalled();
   });
 });
+
+describe('setOpenIDAuthTokens with null res', () => {
+  // The upcoming refreshOIDCAccessToken bridge invokes setOpenIDAuthTokens from
+  // LLM request preprocessing where no HTTP response is available. The function
+  // must tolerate res === null by writing the session (source of truth) and
+  // silently skipping every res.cookie / CloudFront cookie write.
+  it('does not throw when res is null and writes session only', () => {
+    const req = {
+      session: {},
+      user: { _id: 'u1', id: 'u1' },
+    };
+    const tokenset = {
+      access_token: 'at',
+      id_token: 'it',
+      refresh_token: 'rt',
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    };
+    expect(() => setOpenIDAuthTokens(tokenset, req, null, { userId: 'u1' })).not.toThrow();
+    expect(req.session.openidTokens).toMatchObject({
+      accessToken: 'at',
+      idToken: 'it',
+      refreshToken: 'rt',
+    });
+  });
+});

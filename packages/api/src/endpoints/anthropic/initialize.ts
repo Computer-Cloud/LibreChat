@@ -1,7 +1,8 @@
-import { EModelEndpoint, AuthKeys } from 'librechat-data-provider';
+import { EModelEndpoint, AuthKeys, ErrorTypes } from 'librechat-data-provider';
 import type { BaseInitializeParams, InitializeResultBase, AnthropicConfigOptions } from '~/types';
-import { checkUserKeyExpiry, isEnabled } from '~/utils';
 import { loadAnthropicVertexCredentials, getVertexCredentialOptions } from './vertex';
+import { ensureLLMBearer, isLLMOIDCForwardingEnabled } from '~/auth/llmBearer';
+import { checkUserKeyExpiry, isEnabled } from '~/utils';
 import { getLLMConfig } from './llm';
 
 /**
@@ -17,6 +18,7 @@ export async function initializeAnthropic({
   endpoint,
   model_parameters,
   db,
+  refreshOIDCAccessToken,
 }: BaseInitializeParams): Promise<InitializeResultBase> {
   void endpoint;
   const appConfig = req.config;
@@ -79,6 +81,20 @@ export async function initializeAnthropic({
 
   const anthropicConfig = appConfig?.endpoints?.[EModelEndpoint.anthropic];
   const allConfig = appConfig?.endpoints?.all;
+
+  // Fork-only: forward the user's OIDC access_token as the Anthropic API key.
+  // SDK wire format: x-api-key header. When the flag is off or the user is not
+  // OIDC, the original credential is preserved.
+  if (isLLMOIDCForwardingEnabled() && req.user?.provider === 'openid' && refreshOIDCAccessToken) {
+    if (useVertexAI) {
+      throw new Error(
+        JSON.stringify({ type: ErrorTypes.AUTH_FAILED }) +
+          ' — Anthropic Vertex AI is incompatible with OIDC bearer forwarding',
+      );
+    }
+    const { accessToken } = await ensureLLMBearer(req, { refreshOIDCAccessToken });
+    credentials[AuthKeys.ANTHROPIC_API_KEY] = accessToken;
+  }
 
   const result = getLLMConfig(credentials, clientOptions);
 

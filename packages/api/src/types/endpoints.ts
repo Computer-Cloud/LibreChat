@@ -1,4 +1,5 @@
 import type { ClientOptions, OpenAIClientOptions } from '@librechat/agents';
+import type { Request as ExpressRequest } from 'express';
 import type { TConfig } from 'librechat-data-provider';
 import type { EndpointTokenConfig, ServerRequest } from '~/types';
 
@@ -48,6 +49,12 @@ export interface BaseInitializeParams {
   model_parameters?: Record<string, unknown>;
   /** Database methods for user key operations */
   db: EndpointDbMethods;
+  /**
+   * Injected by api/server/ callers. Bridges to openid-client +
+   * AuthService.setOpenIDAuthTokens. Undefined in unit tests or older
+   * call paths — when undefined, the OIDC bearer override is skipped.
+   */
+  refreshOIDCAccessToken?: (req: ExpressRequest) => Promise<void>;
 }
 
 /**

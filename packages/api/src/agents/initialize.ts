@@ -23,7 +23,12 @@ import type {
 import type { GenericTool, LCToolRegistry, ToolMap, LCTool } from '@librechat/agents';
 import type { Response as ServerResponse } from 'express';
 import type { IMongoFile } from '@librechat/data-schemas';
-import type { InitializeResultBase, ServerRequest, EndpointDbMethods } from '~/types';
+import type {
+  InitializeResultBase,
+  ServerRequest,
+  EndpointDbMethods,
+  BaseInitializeParams,
+} from '~/types';
 import type { LCAvailableTools, RequestScopedMCPConnectionStore } from '../mcp/types';
 import type { ResolvedManualSkill, ResolvedAlwaysApplySkill } from './skills';
 import type { TFilterFilesByAgentAccess } from './resources';
@@ -387,6 +392,12 @@ export interface InitializeAgentParams {
    * meta user messages before the LLM call.
    */
   manualSkills?: string[];
+  /**
+   * Optional bridge for OIDC access_token forwarding to the LLM gateway. When
+   * supplied (server-layer callers always do), it is forwarded into the per-
+   * endpoint initializer via `BaseInitializeParams.refreshOIDCAccessToken`.
+   */
+  refreshOIDCAccessToken?: BaseInitializeParams['refreshOIDCAccessToken'];
 }
 
 /**
@@ -549,6 +560,7 @@ export async function initializeAgent(
     parentMessageId,
     allowedProviders,
     isInitialAgent = false,
+    refreshOIDCAccessToken,
   } = params;
   const requestFileOwnerId = req.user?.id;
 
@@ -949,6 +961,7 @@ export async function initializeAgent(
     endpoint: provider,
     model_parameters: finalModelOptions,
     db,
+    refreshOIDCAccessToken,
   });
 
   const llmConfig = options.llmConfig as Record<string, unknown>;

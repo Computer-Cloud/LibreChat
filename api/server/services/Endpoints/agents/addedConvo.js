@@ -8,6 +8,7 @@ const {
   loadAddedAgent: loadAddedAgentFn,
 } = require('@librechat/api');
 const { isEphemeralAgentId } = require('librechat-data-provider');
+const { refreshOIDCAccessToken } = require('~/server/services/Auth/refreshOIDCToken');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { getMCPServerTools } = require('~/server/services/Config');
 const { canAuthorSkillFiles } = require('./skillDeps');
@@ -175,6 +176,7 @@ const processAddedConvo = async ({
         codeEnvAvailable,
         skillStates,
         defaultActiveOnShare,
+        refreshOIDCAccessToken,
       },
       {
         getFiles: db.getFiles,

@@ -5,7 +5,7 @@ const client = require('openid-client');
 const jwtDecode = require('jsonwebtoken/decode');
 const { hashToken, logger, tenantStorage } = require('@librechat/data-schemas');
 const { Strategy: OpenIDStrategy } = require('openid-client/passport');
-const { CacheKeys, EModelEndpoint, ErrorTypes, SystemRoles } = require('librechat-data-provider');
+const { CacheKeys, ErrorTypes, SystemRoles } = require('librechat-data-provider');
 const {
   isEnabled,
   logHeaders,
@@ -25,7 +25,7 @@ const {
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { resizeAvatar } = require('~/server/services/Files/images/avatar');
-const { findUser, createUser, updateUser, updateUserKey, findRolesByNames } = require('~/models');
+const { findUser, createUser, updateUser, findRolesByNames } = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
 const getLogStores = require('~/cache/getLogStores');
 
@@ -830,42 +830,6 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
       },
     },
   );
-
-  // Fork-only: auto-import synthetic api keys so the LLM gateway can identify
-  // the user via the `uid-${openidId}` prefix. PR-2 (OIDC access token
-  // forwarding) replaces this with real OIDC bearer forwarding and deletes
-  // these blocks entirely.
-  const FAR_FUTURE = '2038-01-19T03:14:07.000Z';
-  await updateUserKey({
-    userId: user._id.toString(),
-    name: EModelEndpoint.openAI,
-    value: JSON.stringify({ apiKey: `uid-${user.openidId}`, baseURL: '' }),
-    expiresAt: FAR_FUTURE,
-  });
-  await updateUserKey({
-    userId: user._id.toString(),
-    name: EModelEndpoint.anthropic,
-    value: `uid-${user.openidId}`,
-    expiresAt: FAR_FUTURE,
-  });
-  await updateUserKey({
-    userId: user._id.toString(),
-    name: EModelEndpoint.google,
-    value: JSON.stringify({ GOOGLE_API_KEY: `uid-${user.openidId}` }),
-    expiresAt: FAR_FUTURE,
-  });
-  await updateUserKey({
-    userId: user._id.toString(),
-    name: 'Deepseek',
-    value: JSON.stringify({ apiKey: `uid-${user.openidId}`, baseURL: '' }),
-    expiresAt: FAR_FUTURE,
-  });
-  await updateUserKey({
-    userId: user._id.toString(),
-    name: 'xai',
-    value: JSON.stringify({ apiKey: `uid-${user.openidId}`, baseURL: '' }),
-    expiresAt: FAR_FUTURE,
-  });
 
   return {
     ...user,

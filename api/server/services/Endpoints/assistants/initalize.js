@@ -1,8 +1,14 @@
 const OpenAI = require('openai');
 const { ProxyAgent } = require('undici');
-const { isUserProvided, checkUserKeyExpiry } = require('@librechat/api');
+const {
+  isUserProvided,
+  checkUserKeyExpiry,
+  ensureLLMBearer,
+  isLLMOIDCForwardingEnabled,
+} = require('@librechat/api');
 const { ErrorTypes, EModelEndpoint } = require('librechat-data-provider');
 const { getUserKeyValues, getUserKeyExpiry } = require('~/models');
+const { refreshOIDCAccessToken } = require('~/server/services/Auth/refreshOIDCToken');
 
 const initializeClient = async ({ req, res, version }) => {
   const { PROXY, OPENAI_ORGANIZATION, ASSISTANTS_API_KEY, ASSISTANTS_BASE_URL } = process.env;
@@ -39,6 +45,20 @@ const initializeClient = async ({ req, res, version }) => {
 
   if (!apiKey) {
     throw new Error('Assistants API key not provided. Please provide it again.');
+  }
+
+  // Fork-only: forward the user's OIDC access_token as the OpenAI Assistants
+  // API key. User-provided baseURL is rejected outright to prevent token
+  // exfiltration to attacker-controlled hosts (mirrors custom/initialize.ts).
+  if (isLLMOIDCForwardingEnabled() && req.user?.provider === 'openid') {
+    if (userProvidesURL) {
+      throw new Error(
+        JSON.stringify({ type: ErrorTypes.AUTH_FAILED }) +
+          ' — user-provided baseURL disallowed when forwarding OIDC bearer',
+      );
+    }
+    const { accessToken } = await ensureLLMBearer(req, { refreshOIDCAccessToken });
+    apiKey = accessToken;
   }
 
   if (baseURL) {

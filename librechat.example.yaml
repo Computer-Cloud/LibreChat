@@ -487,6 +487,10 @@ endpoints:
   #     #     deploymentName: claude-3-5-haiku@20241022  # Override for this model
 
   custom:
+    # When OIDC_FORWARD_TO_LLM=true, the `apiKey:` field on each custom endpoint
+    # is IGNORED and replaced at request time with the user's OIDC access_token.
+    # `baseURL:` must NOT be `user_provided` in this mode (the API throws at
+    # request time to prevent token exfiltration to attacker-controlled hosts).
     # Groq Example
     - name: 'groq'
       apiKey: '${GROQ_API_KEY}'

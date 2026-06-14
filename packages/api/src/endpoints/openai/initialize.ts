@@ -6,6 +6,7 @@ import type {
   UserKeyValues,
 } from '~/types';
 import { getAzureCredentials, resolveHeaders, isUserProvided, checkUserKeyExpiry } from '~/utils';
+import { ensureLLMBearer, isLLMOIDCForwardingEnabled } from '~/auth/llmBearer';
 import { validateEndpointURL } from '~/auth';
 import { getOpenAIConfig } from './config';
 
@@ -22,6 +23,7 @@ export async function initializeOpenAI({
   endpoint,
   model_parameters,
   db,
+  refreshOIDCAccessToken,
 }: BaseInitializeParams): Promise<InitializeResultBase> {
   const appConfig = req.config;
   const { PROXY, OPENAI_API_KEY, AZURE_API_KEY, OPENAI_REVERSE_PROXY, AZURE_OPENAI_BASEURL } =
@@ -143,6 +145,19 @@ export async function initializeOpenAI({
       clientOptions.headers = {};
     }
     clientOptions.headers['x-cs-client-ip'] = clientIp;
+  }
+
+  // Fork-only: forward the user's OIDC access_token as the API key.
+  // SDK header semantics handle the wire format (OpenAI uses
+  // Authorization: Bearer, Azure uses api-key). When the flag is off
+  // or the user is not OIDC, the original apiKey is preserved, or when
+  // refreshOIDCAccessToken is not injected (e.g., older unit-test call paths).
+  if (isLLMOIDCForwardingEnabled() && req.user?.provider === 'openid' && refreshOIDCAccessToken) {
+    const { accessToken } = await ensureLLMBearer(req, { refreshOIDCAccessToken });
+    apiKey = accessToken;
+    if (isAzureOpenAI && clientOptions.azure) {
+      clientOptions.azure = { ...clientOptions.azure, azureOpenAIApiKey: accessToken };
+    }
   }
 
   const finalClientOptions: OpenAIConfigOptions = {

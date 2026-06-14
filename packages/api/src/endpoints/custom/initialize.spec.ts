@@ -26,6 +26,8 @@ jest.mock('~/cache', () => ({
 jest.mock('~/utils', () => ({
   isUserProvided: (val: string) => val === 'user_provided',
   checkUserKeyExpiry: jest.fn(),
+  isEnabled: (val: unknown) =>
+    typeof val === 'string' && ['true', '1', 'yes', 'on'].includes(val.toLowerCase()),
 }));
 
 const mockGetCustomEndpointConfig = jest.fn();
@@ -350,5 +352,82 @@ describe('initializeCustom – token-config fetch header forwarding', () => {
         headers: undefined,
       }),
     );
+  });
+});
+
+describe('initializeCustom — OIDC apiKey override', () => {
+  const ORIGINAL = process.env.OIDC_FORWARD_TO_LLM;
+  const futureExpiry = () => Math.floor(Date.now() / 1000) + 3600;
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.OIDC_FORWARD_TO_LLM;
+    else process.env.OIDC_FORWARD_TO_LLM = ORIGINAL;
+    jest.clearAllMocks();
+  });
+
+  it('replaces apiKey with OIDC access_token when flag on', async () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    mockGetCustomEndpointConfig.mockReturnValue({
+      apiKey: 'env-key',
+      baseURL: 'https://gateway.example.com/v1',
+      models: {},
+    });
+    mockGetOpenAIConfig.mockReturnValue({ llmConfig: { model: 'gpt-4' }, configOptions: {} });
+    await initializeCustom({
+      req: {
+        user: {
+          _id: 'u1',
+          id: 'u1',
+          provider: 'openid',
+          federatedTokens: {
+            access_token: 'oidc-jwt',
+            id_token: 'oidc-id',
+            refresh_token: 'oidc-r',
+            expires_at: futureExpiry(),
+          },
+        },
+        body: {},
+        config: {},
+      } as unknown as BaseInitializeParams['req'],
+      endpoint: 'myproxy',
+      model_parameters: { model: 'gpt-4' },
+      db: { getUserKeyValues: jest.fn() } as unknown as BaseInitializeParams['db'],
+      refreshOIDCAccessToken: jest.fn(),
+    });
+    expect(mockGetOpenAIConfig).toHaveBeenCalledWith('oidc-jwt', expect.any(Object), 'myproxy');
+  });
+
+  it('throws when user-provided baseURL combined with OIDC mode', async () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    mockGetCustomEndpointConfig.mockReturnValue({
+      apiKey: 'env-key',
+      baseURL: 'user_provided',
+      models: {},
+    });
+    await expect(
+      initializeCustom({
+        req: {
+          user: {
+            _id: 'u1',
+            id: 'u1',
+            provider: 'openid',
+            federatedTokens: {
+              access_token: 'oidc-jwt',
+              expires_at: futureExpiry(),
+            },
+          },
+          body: {},
+          config: {},
+        } as unknown as BaseInitializeParams['req'],
+        endpoint: 'myproxy',
+        model_parameters: {},
+        db: {
+          getUserKeyValues: jest
+            .fn()
+            .mockResolvedValue({ baseURL: 'https://attacker.example.com/v1' }),
+        } as unknown as BaseInitializeParams['db'],
+        refreshOIDCAccessToken: jest.fn(),
+      }),
+    ).rejects.toThrow(/user-provided baseURL disallowed/);
   });
 });
