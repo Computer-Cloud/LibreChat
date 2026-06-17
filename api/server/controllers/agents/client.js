@@ -1134,10 +1134,12 @@ class AgentClient extends BaseClient {
           runId: this.responseMessageId,
           signal: abortController.signal,
           customHandlers: this.options.eventHandlers,
+          req: this.options.req,
           requestBody: config.configurable.requestBody,
           user: createSafeUser(this.options.req?.user),
           summarizationConfig: appConfig?.summarization,
           appConfig,
+          refreshOIDCAccessToken,
           tokenCounter,
         });
 

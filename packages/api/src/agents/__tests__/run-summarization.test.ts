@@ -1,12 +1,12 @@
 import { logger } from '@librechat/data-schemas';
-import type { AppConfig } from '@librechat/data-schemas';
-import type { SummarizationConfig, TEndpoint } from 'librechat-data-provider';
 import {
   EModelEndpoint,
   FileSources,
   MAX_SUBAGENT_DEPTH,
   MAX_SUBAGENT_RUN_CONFIGS,
 } from 'librechat-data-provider';
+import type { SummarizationConfig, TEndpoint } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 import { createRun } from '~/agents/run';
 
 // Mock winston logger — `format` must be callable so @librechat/data-schemas
@@ -146,6 +146,8 @@ async function callAndCapture(
     summarizationConfig?: SummarizationConfig;
     initialSummary?: { text: string; tokenCount: number };
     appConfig?: AppConfig;
+    req?: unknown;
+    refreshOIDCAccessToken?: (req: unknown) => Promise<void>;
   } = {},
 ) {
   const agents = opts.agents ?? [makeAgent()];
@@ -157,6 +159,8 @@ async function callAndCapture(
     summarizationConfig: opts.summarizationConfig,
     initialSummary: opts.initialSummary,
     appConfig: opts.appConfig,
+    req: opts.req as never,
+    refreshOIDCAccessToken: opts.refreshOIDCAccessToken as never,
     streaming: true,
     streamUsage: true,
   });
@@ -165,6 +169,38 @@ async function callAndCapture(
   expect(createMock).toHaveBeenCalledTimes(1);
   const callArgs = createMock.mock.calls[0][0];
   return callArgs.graphConfig.agents as Array<Record<string, unknown>>;
+}
+
+/**
+ * Build an OIDC express request fixture whose `federatedTokens.access_token`
+ * is far enough in the future to skip the ensureLLMBearer refresh path.
+ */
+function makeOIDCRequest(accessToken = 'oidc-bearer-token'): {
+  user: {
+    _id: string;
+    id: string;
+    provider: string;
+    federatedTokens: {
+      access_token: string;
+      id_token: string;
+      refresh_token: string;
+      expires_at: number;
+    };
+  };
+} {
+  return {
+    user: {
+      _id: 'user-oidc',
+      id: 'user-oidc',
+      provider: 'openid',
+      federatedTokens: {
+        access_token: accessToken,
+        id_token: 'id-good',
+        refresh_token: 'refresh-good',
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+      },
+    },
+  };
 }
 
 /** Minimal AppConfig with a single custom endpoint for testing provider resolution. */
@@ -1100,6 +1136,134 @@ describe('subagentConfigs', () => {
       }),
     );
     expect(Run.create).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite: OIDC bearer forwarding to cross-endpoint summarization (C-2 fix)
+// ---------------------------------------------------------------------------
+describe('OIDC bearer forwarding to cross-endpoint summarization', () => {
+  const originalEnv = process.env.OIDC_FORWARD_TO_LLM;
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.OIDC_FORWARD_TO_LLM;
+    } else {
+      process.env.OIDC_FORWARD_TO_LLM = originalEnv;
+    }
+  });
+
+  it('overrides env apiKey with the user OIDC access_token when flag is on', async () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    const refreshOIDCAccessToken = jest.fn();
+    const appConfig = makeAppConfig([
+      { name: 'Ollama', baseURL: 'http://gateway.internal/v1', apiKey: 'env-service-key' },
+    ]);
+
+    const agents = await callAndCapture({
+      agents: [makeAgent({ provider: 'openAI', endpoint: 'openAI' })],
+      summarizationConfig: { provider: 'Ollama', model: 'llama3' },
+      appConfig,
+      req: makeOIDCRequest('user-jwt-abc'),
+      refreshOIDCAccessToken,
+    });
+
+    const config = agents[0].summarizationConfig as Record<string, unknown>;
+    const parameters = config.parameters as Record<string, unknown>;
+    /** Critical: env service key must NOT leak — OIDC bearer wins. */
+    expect(parameters.apiKey).toBe('user-jwt-abc');
+    expect(parameters.apiKey).not.toBe('env-service-key');
+    /** Baseline endpoint resolution still applies (baseURL preserved). */
+    expect((parameters.configuration as Record<string, unknown>).baseURL).toBe(
+      'http://gateway.internal/v1',
+    );
+    /** Token was valid (>60s expiry) so no refresh call expected. */
+    expect(refreshOIDCAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('does not override apiKey when flag is off, even for OIDC user', async () => {
+    delete process.env.OIDC_FORWARD_TO_LLM;
+    const refreshOIDCAccessToken = jest.fn();
+    const appConfig = makeAppConfig([
+      { name: 'Ollama', baseURL: 'http://gateway.internal/v1', apiKey: 'env-service-key' },
+    ]);
+
+    const agents = await callAndCapture({
+      agents: [makeAgent({ provider: 'openAI', endpoint: 'openAI' })],
+      summarizationConfig: { provider: 'Ollama', model: 'llama3' },
+      appConfig,
+      req: makeOIDCRequest('user-jwt-abc'),
+      refreshOIDCAccessToken,
+    });
+
+    const config = agents[0].summarizationConfig as Record<string, unknown>;
+    const parameters = config.parameters as Record<string, unknown>;
+    expect(parameters.apiKey).toBe('env-service-key');
+    expect(refreshOIDCAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('does not override apiKey for non-OIDC user when flag is on', async () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    const refreshOIDCAccessToken = jest.fn();
+    const appConfig = makeAppConfig([
+      { name: 'Ollama', baseURL: 'http://gateway.internal/v1', apiKey: 'env-service-key' },
+    ]);
+    const localUserReq = { user: { _id: 'u', id: 'u', provider: 'local' } };
+
+    const agents = await callAndCapture({
+      agents: [makeAgent({ provider: 'openAI', endpoint: 'openAI' })],
+      summarizationConfig: { provider: 'Ollama', model: 'llama3' },
+      appConfig,
+      req: localUserReq,
+      refreshOIDCAccessToken,
+    });
+
+    const config = agents[0].summarizationConfig as Record<string, unknown>;
+    const parameters = config.parameters as Record<string, unknown>;
+    expect(parameters.apiKey).toBe('env-service-key');
+    expect(refreshOIDCAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('fails loud when DI is missing in OIDC mode (mirrors F1 endpoint guard)', async () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    const appConfig = makeAppConfig([
+      { name: 'Ollama', baseURL: 'http://gateway.internal/v1', apiKey: 'env-service-key' },
+    ]);
+    const signal = new AbortController().signal;
+
+    await expect(
+      createRun({
+        agents: [makeAgent({ provider: 'openAI', endpoint: 'openAI' })] as never,
+        signal,
+        summarizationConfig: { provider: 'Ollama', model: 'llama3' },
+        appConfig,
+        req: makeOIDCRequest() as never,
+        // refreshOIDCAccessToken intentionally omitted
+        streaming: true,
+        streamUsage: true,
+      }),
+    ).rejects.toThrow(/OIDC forwarding misconfigured/);
+  });
+
+  it('rejects user-provided baseURL when forwarding OIDC bearer (token exfiltration guard)', async () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    const refreshOIDCAccessToken = jest.fn();
+    const appConfig = makeAppConfig([
+      { name: 'Ollama', baseURL: 'user_provided', apiKey: 'env-service-key' },
+    ]);
+    const signal = new AbortController().signal;
+
+    await expect(
+      createRun({
+        agents: [makeAgent({ provider: 'openAI', endpoint: 'openAI' })] as never,
+        signal,
+        summarizationConfig: { provider: 'Ollama', model: 'llama3' },
+        appConfig,
+        req: makeOIDCRequest() as never,
+        refreshOIDCAccessToken,
+        streaming: true,
+        streamUsage: true,
+      }),
+    ).rejects.toThrow(/auth_failed/);
   });
 });
 
