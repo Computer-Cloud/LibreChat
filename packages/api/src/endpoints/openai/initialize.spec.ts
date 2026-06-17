@@ -135,6 +135,30 @@ describe('initializeOpenAI — OIDC apiKey override', () => {
     );
   });
 
+  it('throws when flag on + OIDC user but refreshOIDCAccessToken DI is missing', async () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    process.env.OPENAI_API_KEY = 'env-key';
+    mockGetOpenAIConfig.mockReturnValue({ llmConfig: {} });
+    await expect(
+      initializeOpenAI({
+        req: {
+          user: {
+            _id: 'u1',
+            id: 'u1',
+            provider: 'openid',
+            federatedTokens: { access_token: 'oidc-jwt', expires_at: futureExpiry() },
+          },
+          body: {},
+          config: { endpoints: {} },
+        } as unknown as BaseInitializeParams['req'],
+        endpoint: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        db: { getUserKeyValues: jest.fn() } as unknown as BaseInitializeParams['db'],
+      }),
+    ).rejects.toThrow(/OIDC forwarding misconfigured: refreshOIDCAccessToken not injected/);
+    expect(mockGetOpenAIConfig).not.toHaveBeenCalled();
+  });
+
   it('falls back to env apiKey when flag on but user is not OIDC', async () => {
     process.env.OIDC_FORWARD_TO_LLM = 'true';
     process.env.OPENAI_API_KEY = 'env-key';

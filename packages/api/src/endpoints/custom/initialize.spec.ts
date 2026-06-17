@@ -397,6 +397,33 @@ describe('initializeCustom — OIDC apiKey override', () => {
     expect(mockGetOpenAIConfig).toHaveBeenCalledWith('oidc-jwt', expect.any(Object), 'myproxy');
   });
 
+  it('throws when flag on + OIDC user but refreshOIDCAccessToken DI is missing', async () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    mockGetCustomEndpointConfig.mockReturnValue({
+      apiKey: 'env-key',
+      baseURL: 'https://gateway.example.com/v1',
+      models: {},
+    });
+    await expect(
+      initializeCustom({
+        req: {
+          user: {
+            _id: 'u1',
+            id: 'u1',
+            provider: 'openid',
+            federatedTokens: { access_token: 'oidc-jwt', expires_at: futureExpiry() },
+          },
+          body: {},
+          config: {},
+        } as unknown as BaseInitializeParams['req'],
+        endpoint: 'myproxy',
+        model_parameters: { model: 'gpt-4' },
+        db: { getUserKeyValues: jest.fn() } as unknown as BaseInitializeParams['db'],
+      }),
+    ).rejects.toThrow(/OIDC forwarding misconfigured: refreshOIDCAccessToken not injected/);
+    expect(mockGetOpenAIConfig).not.toHaveBeenCalled();
+  });
+
   it('throws when user-provided baseURL combined with OIDC mode', async () => {
     process.env.OIDC_FORWARD_TO_LLM = 'true';
     mockGetCustomEndpointConfig.mockReturnValue({

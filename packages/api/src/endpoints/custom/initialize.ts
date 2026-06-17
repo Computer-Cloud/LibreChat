@@ -202,8 +202,13 @@ export async function initializeCustom({
 
   // Fork-only: forward the user's OIDC access_token as the API key. Custom
   // endpoints with user-provided baseURL are rejected outright to prevent
-  // token exfiltration to attacker-controlled hosts.
-  if (isLLMOIDCForwardingEnabled() && req.user?.provider === 'openid' && refreshOIDCAccessToken) {
+  // token exfiltration to attacker-controlled hosts. Missing DI in OIDC mode
+  // is a hard error — silently falling back to the env service key would
+  // invert the privilege boundary.
+  if (isLLMOIDCForwardingEnabled() && req.user?.provider === 'openid') {
+    if (!refreshOIDCAccessToken) {
+      throw new Error('OIDC forwarding misconfigured: refreshOIDCAccessToken not injected');
+    }
     if (userProvidesURL) {
       throw new Error(
         JSON.stringify({ type: ErrorTypes.AUTH_FAILED }) +

@@ -118,6 +118,29 @@ describe('initializeAnthropic — OIDC apiKey override', () => {
     ).rejects.toThrow(/Vertex AI is incompatible/);
   });
 
+  it('throws when flag on + OIDC user but refreshOIDCAccessToken DI is missing', async () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    process.env.ANTHROPIC_API_KEY = 'env-key';
+    await expect(
+      initializeAnthropic({
+        req: {
+          user: {
+            _id: 'u1',
+            id: 'u1',
+            provider: 'openid',
+            federatedTokens: { access_token: 'oidc-jwt', expires_at: futureExpiry() },
+          },
+          body: {},
+          config: { endpoints: {} },
+        } as unknown as BaseInitializeParams['req'],
+        endpoint: 'anthropic',
+        model_parameters: {},
+        db: { getUserKey: jest.fn() } as unknown as BaseInitializeParams['db'],
+      }),
+    ).rejects.toThrow(/OIDC forwarding misconfigured: refreshOIDCAccessToken not injected/);
+    expect(mockGetLLMConfig).not.toHaveBeenCalled();
+  });
+
   it('falls back to env credential when flag on but user is not OIDC', async () => {
     process.env.OIDC_FORWARD_TO_LLM = 'true';
     process.env.ANTHROPIC_API_KEY = 'env-key';
