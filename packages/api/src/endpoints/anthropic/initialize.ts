@@ -84,8 +84,13 @@ export async function initializeAnthropic({
 
   // Fork-only: forward the user's OIDC access_token as the Anthropic API key.
   // SDK wire format: x-api-key header. When the flag is off or the user is not
-  // OIDC, the original credential is preserved.
-  if (isLLMOIDCForwardingEnabled() && req.user?.provider === 'openid' && refreshOIDCAccessToken) {
+  // OIDC, the original credential is preserved. Missing DI in OIDC mode is a
+  // hard error — silently falling back to the env service key would invert the
+  // privilege boundary.
+  if (isLLMOIDCForwardingEnabled() && req.user?.provider === 'openid') {
+    if (!refreshOIDCAccessToken) {
+      throw new Error('OIDC forwarding misconfigured: refreshOIDCAccessToken not injected');
+    }
     if (useVertexAI) {
       throw new Error(
         JSON.stringify({ type: ErrorTypes.AUTH_FAILED }) +

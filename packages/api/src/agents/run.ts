@@ -1,6 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import { Run, Providers, Constants } from '@librechat/agents';
 import {
+  ErrorTypes,
   KnownEndpoints,
   MAX_SUBAGENT_DEPTH,
   MAX_SUBAGENT_RUN_CONFIGS,
@@ -31,7 +32,10 @@ import type {
 } from 'librechat-data-provider';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { AppConfig, IUser } from '@librechat/data-schemas';
+import type { Request as ExpressRequest } from 'express';
+import type { ServerRequest } from '~/types/http';
 import type * as t from '~/types';
+import { ensureLLMBearer, isLLMOIDCForwardingEnabled } from '~/auth/llmBearer';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { resolveHeaders, createSafeUser } from '~/utils/env';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
@@ -397,6 +401,7 @@ function resolveSummarizationProvider(
   rawProvider: string,
   appConfig: AppConfig | undefined,
   headerContext: { user?: IUser; requestBody?: t.RequestBody },
+  oidcBearer?: string,
 ): {
   provider: string;
   clientOverrides?: SummarizationClientOverrides;
@@ -414,6 +419,20 @@ function resolveSummarizationProvider(
     }
     const rawApiKey = customEndpointConfig.apiKey ?? '';
     const rawBaseURL = customEndpointConfig.baseURL ?? '';
+    /**
+     * Mirrors the C4 guard in `initializeCustom`: when the OIDC bearer is
+     * being forwarded as the API key, a user-provided baseURL is rejected
+     * outright to prevent token exfiltration to attacker-controlled hosts.
+     * Throwing here (rather than falling back to the raw provider) ensures
+     * the summarization sub-call cannot silently route the user's JWT to a
+     * different host than the main agent flow does.
+     */
+    if (oidcBearer && isUserProvided(rawBaseURL)) {
+      throw new Error(
+        JSON.stringify({ type: ErrorTypes.AUTH_FAILED }) +
+          ' — user-provided baseURL disallowed when forwarding OIDC bearer to summarization',
+      );
+    }
     /**
      * User-provided credentials require an async DB lookup and expiry checks
      * that are out of scope here. Keep the raw provider so the SDK surfaces
@@ -479,7 +498,17 @@ function resolveSummarizationProvider(
     );
     const { apiKey: resolvedApiKey, ...llmConfigOverrides } = llmConfig;
     const clientOverrides: SummarizationClientOverrides = { ...llmConfigOverrides };
-    if (typeof resolvedApiKey === 'string') {
+    /**
+     * Override the env-derived service apiKey with the user's OIDC access_token
+     * so the summarization sub-call carries the same identity as the main LLM
+     * call. Without this, `OIDC_FORWARD_TO_LLM=true` would leak the env service
+     * key on every summarization request while the main agent call carries the
+     * user's JWT — the upstream gateway sees mixed identities for one
+     * conversation.
+     */
+    if (oidcBearer) {
+      clientOverrides.apiKey = oidcBearer;
+    } else if (typeof resolvedApiKey === 'string') {
       clientOverrides.apiKey = resolvedApiKey;
     }
     if (configOptions) {
@@ -497,6 +526,15 @@ function resolveSummarizationProvider(
       clientOverrides,
     };
   } catch (error) {
+    /**
+     * Re-throw security errors raised by the OIDC bearer guard above so the
+     * route layer sees AUTH_FAILED instead of silently falling back to a raw
+     * provider name (which would skip the summarization sub-call entirely and
+     * mask the misconfiguration).
+     */
+    if (error instanceof Error && error.message.includes(ErrorTypes.AUTH_FAILED)) {
+      throw error;
+    }
     logger.warn(
       `[resolveSummarizationProvider] failed to resolve "${rawProvider}"; falling back to raw provider`,
       error,
@@ -513,6 +551,7 @@ function shapeSummarizationConfig(
   appConfig: AppConfig | undefined,
   agentEndpoint: string | undefined,
   headerContext: { user?: IUser; requestBody?: t.RequestBody },
+  oidcBearer?: string,
 ) {
   const rawProvider = config?.provider ?? fallbackProvider;
   /**
@@ -529,7 +568,7 @@ function shapeSummarizationConfig(
 
   const { provider, clientOverrides } = isSameEndpointAsAgent
     ? { provider: fallbackProvider, clientOverrides: undefined }
-    : resolveSummarizationProvider(rawProvider, appConfig, headerContext);
+    : resolveSummarizationProvider(rawProvider, appConfig, headerContext, oidcBearer);
 
   const model = config?.model ?? fallbackModel;
   const trigger =
@@ -778,6 +817,7 @@ export async function createRun({
   signal,
   agents,
   messages,
+  req,
   requestBody,
   user,
   tokenCounter,
@@ -788,6 +828,7 @@ export async function createRun({
   initialSummary,
   calibrationRatio,
   appConfig,
+  refreshOIDCAccessToken,
   streaming = true,
   streamUsage = true,
 }: {
@@ -796,6 +837,12 @@ export async function createRun({
   runId?: string;
   streaming?: boolean;
   streamUsage?: boolean;
+  /**
+   * Express request — required when `OIDC_FORWARD_TO_LLM` is on and the user
+   * is OIDC, so the summarization sub-call can resolve the same bearer as the
+   * main agent flow. Optional in unit tests and non-OIDC flows.
+   */
+  req?: ServerRequest;
   requestBody?: t.RequestBody;
   user?: IUser;
   /** Message history for extracting previously discovered tools */
@@ -810,10 +857,34 @@ export async function createRun({
    * (e.g. "Ollama") in the summarization config to SDK-recognized providers.
    */
   appConfig?: AppConfig;
+  /**
+   * Injected by api/server/ callers (`refreshOIDCToken` bridge). Required when
+   * `OIDC_FORWARD_TO_LLM` is on and the user is OIDC — missing DI in that mode
+   * throws so a silent fallback to env service keys can't invert the privilege
+   * boundary on the summarization sub-call. Mirrors the same gate the TS
+   * endpoint initializers apply on the main LLM call.
+   */
+  refreshOIDCAccessToken?: (req: ExpressRequest) => Promise<void>;
 } & Pick<
   RunConfig,
   'tokenCounter' | 'customHandlers' | 'indexTokenCountMap' | 'initialSessions'
 >): Promise<Run<IState>> {
+  /**
+   * Resolve the OIDC bearer once per run and pass the string down into the
+   * summarization config builder. Doing this at the top avoids cascading
+   * async through `buildAgentInput`/`shapeSummarizationConfig` and ensures
+   * every agent in a multi-agent graph sees the same token even if a refresh
+   * happens mid-build.
+   */
+  let summarizationOIDCBearer: string | undefined;
+  if (isLLMOIDCForwardingEnabled() && req?.user?.provider === 'openid') {
+    if (!refreshOIDCAccessToken) {
+      throw new Error('OIDC forwarding misconfigured: refreshOIDCAccessToken not injected');
+    }
+    const { accessToken } = await ensureLLMBearer(req, { refreshOIDCAccessToken });
+    summarizationOIDCBearer = accessToken;
+  }
+
   /**
    * Only extract discovered tools if:
    * 1. We have message history to parse
@@ -844,6 +915,7 @@ export async function createRun({
       appConfig,
       agent.endpoint ?? undefined,
       { user, requestBody },
+      summarizationOIDCBearer,
     );
 
     const modelParameters = normalizeAgentModelParameters(agent.model_parameters);

@@ -125,6 +125,44 @@ describe('ensureLLMBearer', () => {
     results.forEach((r) => expect(r.accessToken).toBe('jwt-fresh'));
   });
 
+  it('does NOT dedupe refresh calls across different users', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const reqA = makeReq({ provider: 'openid' });
+    (reqA.user as { _id: string; id: string; federatedTokens: unknown })._id = 'user-a';
+    (reqA.user as { _id: string; id: string; federatedTokens: unknown }).id = 'user-a';
+    (reqA.user as { federatedTokens: unknown }).federatedTokens = {
+      access_token: 'a-stale',
+      expires_at: now + 10,
+    };
+
+    const reqB = makeReq({ provider: 'openid' });
+    (reqB.user as { _id: string; id: string; federatedTokens: unknown })._id = 'user-b';
+    (reqB.user as { _id: string; id: string; federatedTokens: unknown }).id = 'user-b';
+    (reqB.user as { federatedTokens: unknown }).federatedTokens = {
+      access_token: 'b-stale',
+      expires_at: now + 10,
+    };
+
+    mockRefresh.mockImplementation(
+      async (r: { user: { _id: string; federatedTokens: unknown } }) => {
+        r.user.federatedTokens = {
+          access_token: `${r.user._id}-fresh`,
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+        };
+      },
+    );
+
+    const [resultA, resultB] = await Promise.all([
+      ensureLLMBearer(reqA, deps),
+      ensureLLMBearer(reqB, deps),
+    ]);
+
+    expect(mockRefresh).toHaveBeenCalledTimes(2);
+    expect(resultA.accessToken).toBe('user-a-fresh');
+    expect(resultB.accessToken).toBe('user-b-fresh');
+    expect(resultA.accessToken).not.toBe(resultB.accessToken);
+  });
+
   it('does not pass access_token literal to logger', async () => {
     const { logger } = jest.requireMock('@librechat/data-schemas');
     const secret = 'super-secret-jwt-xyz';

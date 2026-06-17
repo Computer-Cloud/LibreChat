@@ -150,9 +150,13 @@ export async function initializeOpenAI({
   // Fork-only: forward the user's OIDC access_token as the API key.
   // SDK header semantics handle the wire format (OpenAI uses
   // Authorization: Bearer, Azure uses api-key). When the flag is off
-  // or the user is not OIDC, the original apiKey is preserved, or when
-  // refreshOIDCAccessToken is not injected (e.g., older unit-test call paths).
-  if (isLLMOIDCForwardingEnabled() && req.user?.provider === 'openid' && refreshOIDCAccessToken) {
+  // or the user is not OIDC, the original apiKey is preserved. Missing
+  // DI in OIDC mode is a hard error — silently falling back to the env
+  // service key would invert the privilege boundary.
+  if (isLLMOIDCForwardingEnabled() && req.user?.provider === 'openid') {
+    if (!refreshOIDCAccessToken) {
+      throw new Error('OIDC forwarding misconfigured: refreshOIDCAccessToken not injected');
+    }
     const { accessToken } = await ensureLLMBearer(req, { refreshOIDCAccessToken });
     apiKey = accessToken;
     if (isAzureOpenAI && clientOptions.azure) {

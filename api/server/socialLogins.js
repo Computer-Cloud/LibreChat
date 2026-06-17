@@ -95,6 +95,15 @@ const assertOIDCForwardingCompatible = () => {
   if (!isEnabled(process.env.OIDC_FORWARD_TO_LLM)) {
     return;
   }
+  if (isEnabled(process.env.OPENID_REUSE_TOKENS)) {
+    throw new Error(
+      'OIDC_FORWARD_TO_LLM is enabled together with OPENID_REUSE_TOKENS. ' +
+        'This combination silently de-syncs the openid_user_id cookie because ' +
+        'every LLM-side token refresh skips cookie writes (no Express response ' +
+        'available in the bridge). Disable OPENID_REUSE_TOKENS, or unset ' +
+        'OIDC_FORWARD_TO_LLM. See docs/superpowers/specs/2026-06-13-oidc-llm-forwarding-design.md.',
+    );
+  }
   const enabledNonOIDC = [];
   if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
     enabledNonOIDC.push('google');
