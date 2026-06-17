@@ -84,4 +84,43 @@ describe('refreshOIDCAccessToken', () => {
       }
     }
   });
+
+  it('logs structured error context (code, status, error_description, etc.) without leaking secrets', async () => {
+    const { logger } = jest.requireMock('@librechat/data-schemas');
+    const richError = Object.assign(new Error('invalid_grant'), {
+      name: 'OAuth2Error',
+      code: 'OAUTH_INVALID_GRANT',
+      error: 'invalid_grant',
+      error_description: 'Refresh token expired',
+      cause: new Error('upstream timeout'),
+      response: {
+        status: 400,
+        data: { access_token: 'secret-leaked-token' },
+      },
+    });
+    openIdClient.refreshTokenGrant.mockRejectedValue(richError);
+    const req = {
+      session: { openidTokens: { refreshToken: 'old-rt' } },
+      user: { id: 'u1' },
+    };
+    await expect(refreshOIDCAccessToken(req)).rejects.toThrow('invalid_grant');
+
+    expect(logger.error).toHaveBeenCalledWith(
+      '[refreshOIDCAccessToken] grant failed',
+      expect.objectContaining({
+        name: 'OAuth2Error',
+        code: 'OAUTH_INVALID_GRANT',
+        status: 400,
+        errorCode: 'invalid_grant',
+        errorDescription: 'Refresh token expired',
+        message: 'invalid_grant',
+      }),
+    );
+
+    for (const call of logger.error.mock.calls) {
+      for (const arg of call) {
+        expect(JSON.stringify(arg)).not.toContain('secret-leaked-token');
+      }
+    }
+  });
 });

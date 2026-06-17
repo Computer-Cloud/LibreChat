@@ -29,7 +29,15 @@ async function refreshOIDCAccessToken(req) {
   try {
     tokenset = await openIdClient.refreshTokenGrant(openIdConfig, refreshToken, refreshParams);
   } catch (error) {
-    logger.error('[refreshOIDCAccessToken] grant failed', { message: error.message });
+    logger.error('[refreshOIDCAccessToken] grant failed', {
+      name: error.name,
+      code: error.code,
+      status: error.response?.status,
+      errorCode: error.error,
+      errorDescription: error.error_description,
+      cause: error.cause,
+      message: error.message,
+    });
     throw error;
   }
 
