@@ -294,4 +294,31 @@ describe('assertOIDCForwardingCompatible (called independently of configureSocia
     const { assertOIDCForwardingCompatible } = require('./socialLogins');
     expect(() => assertOIDCForwardingCompatible()).not.toThrow();
   });
+
+  it('throws when OIDC_FORWARD_TO_LLM=true and OPENID_REUSE_TOKENS=true', () => {
+    process.env.OIDC_FORWARD_TO_LLM = 'true';
+    process.env.OPENID_REUSE_TOKENS = 'true';
+    process.env.ALLOW_EMAIL_LOGIN = 'false';
+    delete process.env.GOOGLE_CLIENT_ID;
+    delete process.env.GOOGLE_CLIENT_SECRET;
+    delete process.env.GITHUB_CLIENT_ID;
+    delete process.env.GITHUB_CLIENT_SECRET;
+    delete process.env.FACEBOOK_CLIENT_ID;
+    delete process.env.FACEBOOK_CLIENT_SECRET;
+    delete process.env.DISCORD_CLIENT_ID;
+    delete process.env.DISCORD_CLIENT_SECRET;
+    delete process.env.APPLE_CLIENT_ID;
+    delete process.env.APPLE_PRIVATE_KEY_PATH;
+    delete process.env.SAML_ENTRY_POINT;
+    delete process.env.LDAP_URL;
+    const { assertOIDCForwardingCompatible } = require('./socialLogins');
+    expect(() => assertOIDCForwardingCompatible()).toThrow(/OPENID_REUSE_TOKENS/);
+  });
+
+  it('does not validate OPENID_REUSE_TOKENS when OIDC_FORWARD_TO_LLM is off', () => {
+    delete process.env.OIDC_FORWARD_TO_LLM;
+    process.env.OPENID_REUSE_TOKENS = 'true';
+    const { assertOIDCForwardingCompatible } = require('./socialLogins');
+    expect(() => assertOIDCForwardingCompatible()).not.toThrow();
+  });
 });
